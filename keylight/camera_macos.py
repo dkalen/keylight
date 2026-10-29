@@ -109,16 +109,18 @@ def obs_process_running() -> bool:
 
 
 class MacCameraProbe:
-    """CoreMediaIO can't say *which* process runs a device. So while the Hub (OBS)
-    is running, the physical camera's use is attributed to OBS and ignored, and
-    only the virtual camera counts (ADR 0001)."""
+    """CoreMediaIO can't say *which* process runs a device. So while OBS's own
+    camera source is live, the physical camera's use is attributed to OBS and
+    ignored (ADR 0001). OBS open with the camera source hidden, or with no camera
+    source at all, doesn't hide anyone else's use. Without the websocket we can't
+    tell, so a running OBS process is assumed to hold the camera."""
 
     def __init__(self, specs: list[str], any_camera: bool = False, virtual_specs: list[str] = (),
-                 hub_running: Callable[[], bool] | None = None):
+                 hub_holds_camera: Callable[[], bool | None] | None = None):
         self.specs = [s.lower() for s in specs]
         self.virtual_specs = [s.lower() for s in virtual_specs]
         self.any_camera = any_camera or not self.specs
-        self.hub_running = hub_running
+        self.hub_holds_camera = hub_holds_camera
         self.api = _CMIO()
 
     def matching(self, specs: list[str] | None = None) -> list[tuple[int, str]]:
@@ -132,7 +134,11 @@ class MacCameraProbe:
         return out
 
     def _hub_up(self) -> bool:
-        return bool(self.hub_running and self.hub_running()) or obs_process_running()
+        """Is OBS (rather than someone else) what's running the camera?"""
+        answer = self.hub_holds_camera() if self.hub_holds_camera else None
+        if answer is not None:
+            return answer
+        return obs_process_running()
 
     def poll(self) -> Observation:
         virtual = self.matching(self.virtual_specs) if self.virtual_specs else []
@@ -148,7 +154,7 @@ class MacCameraProbe:
     def describe(self) -> str:
         rows = [f"{name!r} running={self.api.running_somewhere(d)}"
                 for d, name in self.matching() + (self.matching(self.virtual_specs) if self.virtual_specs else [])]
-        return "devices=" + (", ".join(rows) if rows else "none") + f"  hub_running={self._hub_up()}"
+        return "devices=" + (", ".join(rows) if rows else "none") + f"  obs_holds_camera={self._hub_up()}"
 
     def all_devices(self) -> list[str]:
         return [f"{self.api.string(d, PROP_NAME)}  uid={self.api.string(d, PROP_UID)}" for d in self.api.devices()]

@@ -183,6 +183,8 @@ class WatcherTests(unittest.TestCase):
 class FakeObsClient:
     active = False
     fail = False
+    camera_live = False
+    sources: list[str] = ["Video Capture Device"]
 
     def __init__(self, _cfg):
         if FakeObsClient.fail:
@@ -191,6 +193,15 @@ class FakeObsClient:
 
     def recording_or_streaming(self):
         return FakeObsClient.active
+
+    def capture_source(self):
+        from keylight.obs import ObsError
+        if not FakeObsClient.sources:
+            raise ObsError("no video capture input found in OBS")
+        return FakeObsClient.sources[0]
+
+    def source_active(self, name):
+        return FakeObsClient.camera_live
 
     def close(self):
         pass
@@ -201,6 +212,8 @@ class SessionProbeTests(unittest.TestCase):
         logging.disable(logging.CRITICAL)
         FakeObsClient.active = False
         FakeObsClient.fail = False
+        FakeObsClient.camera_live = False
+        FakeObsClient.sources = ["Video Capture Device"]
         self.cam = FakeProbe()
         self.now = 0.0
         self.obs = ObsSessionProbe(parse_config({}), clock=lambda: self.now, client_factory=FakeObsClient)
@@ -222,6 +235,19 @@ class SessionProbeTests(unittest.TestCase):
     def test_camera_decides_absence(self):
         self.cam.obs = GONE
         self.assertIs(self.probe.poll(), GONE)
+
+    def test_camera_in_use_by_obs(self):
+        self.assertIsNone(self.obs.camera_in_use_by_obs())          # not connected yet
+        self.obs.poll()
+        self.assertFalse(self.obs.camera_in_use_by_obs())
+        FakeObsClient.camera_live = True
+        self.assertTrue(self.obs.camera_in_use_by_obs())
+
+    def test_screen_only_obs_does_not_hold_camera(self):
+        FakeObsClient.sources = []
+        FakeObsClient.camera_live = True
+        self.obs.poll()
+        self.assertFalse(self.obs.camera_in_use_by_obs())
 
     def test_obs_down_retries_after_backoff(self):
         FakeObsClient.fail = True

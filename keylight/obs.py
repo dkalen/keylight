@@ -219,6 +219,12 @@ class ObsClient:
                 return item["inputName"]
         raise ObsError("no video capture input found in OBS; set [obs] source")
 
+    def source_active(self, source: str) -> bool:
+        """True if OBS is showing the source anywhere (program or preview), which
+        is when OBS itself is pulling frames from the device."""
+        data = self.request("GetSourceActive", {"sourceName": source})
+        return bool(data.get("videoActive") or data.get("videoShowing"))
+
     def screenshot_jpeg(self, source: str, width: int) -> bytes:
         data = self.request("GetSourceScreenshot", {"sourceName": source, "imageFormat": "jpg",
                                                     "imageWidth": width, "imageCompressionQuality": 85})

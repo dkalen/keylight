@@ -91,6 +91,7 @@ class ObsSessionProbe:
             client_factory = ObsClient
         self.client_factory = client_factory
         self.client = None
+        self._source: str | None = None
         self._next_try = 0.0
         self._reason: str | None = None
 
@@ -128,6 +129,24 @@ class ObsSessionProbe:
             self.client.close()
             self.client = None
             return Observation.IDLE
+
+    def camera_in_use_by_obs(self) -> bool | None:
+        """Is OBS's own camera source live right now? None if OBS isn't reachable.
+        No capture input at all (e.g. screen-only scenes) counts as False."""
+        from .obs import ObsError, ObsUnavailable
+        if self.client is None:
+            return None
+        try:
+            if self._source is None:
+                self._source = self.client.capture_source()
+            return self.client.source_active(self._source)
+        except ObsUnavailable:
+            self.client.close()
+            self.client = None
+            return None
+        except ObsError:
+            self._source = None      # renamed/removed source, or no capture input
+            return False
 
     def describe(self) -> str:
         return f"obs={'connected' if self.client else (self._reason or 'not connected')}"
@@ -289,7 +308,7 @@ def make_probe(cfg: Config) -> SessionProbe:
     if sys.platform == "darwin":
         from .camera_macos import MacCameraProbe
         camera = MacCameraProbe(w.macos_devices, w.any_camera, w.macos_virtual_devices,
-                                hub_running=(lambda: obs.connected) if obs else None)
+                                hub_holds_camera=obs.camera_in_use_by_obs if obs else None)
     elif sys.platform.startswith("linux"):
         from .camera_linux import LinuxCameraProbe
         camera = LinuxCameraProbe(w.linux_devices, w.any_camera, w.ignore_processes,

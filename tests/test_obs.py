@@ -25,6 +25,7 @@ class FakeObs:
         self.inputs = [{"inputName": "Audio", "inputKind": "pulse_input_capture"},
                        {"inputName": "Video Capture Device (V4L2)", "inputKind": "v4l2_input"}]
         self.requests = []
+        self.active: set[str] = set()
         self.sock = socket.socket()
         self.sock.bind(("127.0.0.1", 0))
         self.sock.listen()
@@ -125,6 +126,10 @@ class FakeObs:
             data = {"outputActive": self.recording}
         elif rt == "GetStreamStatus":
             data = {"outputActive": self.streaming}
+        elif rt == "GetSourceActive":
+            name = d["requestData"]["sourceName"]
+            ok = name in [i["inputName"] for i in self.inputs]
+            data = {"videoActive": name in self.active, "videoShowing": name in self.active}
         elif rt == "GetInputList":
             data = {"inputs": self.inputs}
         elif rt == "GetSourceScreenshot":
@@ -162,6 +167,16 @@ class ObsClientTests(unittest.TestCase):
         self.assertEqual(source, "Video Capture Device (V4L2)")
         self.assertEqual(c.screenshot_jpeg(source, 480), JPEG)
         self.assertEqual(self.server.requests[-1]["requestData"]["imageWidth"], 480)
+        c.close()
+
+    def test_source_active(self):
+        c = ObsClient(self.cfg(password=""))
+        src = c.capture_source()
+        self.assertFalse(c.source_active(src))
+        self.server.active.add(src)
+        self.assertTrue(c.source_active(src))
+        with self.assertRaises(ObsError):
+            c.source_active("missing")
         c.close()
 
     def test_request_failure(self):

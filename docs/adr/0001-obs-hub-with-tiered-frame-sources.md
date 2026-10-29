@@ -7,7 +7,7 @@ Calls must still work without OBS, so the light follows any Session regardless o
 ## Consequences
 
 - Phase 1 needs an obs-websocket client, for recording/streaming Sessions. It's a small stdlib one, so the watcher stays dependency-free.
-- On macOS, CoreMediaIO can't say which process is using the card. So while OBS is running, direct use of the card isn't counted as a Session there, and calls on the Mac must go through the virtual camera.
+- On macOS, CoreMediaIO can't say which process is using the card. So while OBS's own camera source is live, per obs-websocket `GetSourceActive`, use of the card is attributed to OBS and isn't counted as a Session. OBS open with only screen capture, or with the camera source hidden, doesn't hide a call. Without the websocket, a running OBS process is assumed to hold the camera.
 - Firefox on this machine runs with `media.webrtc.camera.allow-pipewire = false`. Its PipeWire camera path can't negotiate the card's only frame rate (59.94 fps as 7013/117), so the picture stays blank. Re-enabling the setting breaks direct calls from Firefox, and that also rules out Linux tier 2 for now (see the Phase 2 doc).
 - The work Mac has no Hub. It's MDM-managed and doesn't offer the setting to approve OBS's camera extension, so the OBS Virtual Camera can't run there. We chose not to ask IT for an exception: calls on the Mac use the card directly with OBS closed, and OBS screenshots are still used whenever OBS is open, for example while recording.
 - macOS tier 2 works technically: a second AVFoundation reader got 60 fps while Photo Booth stayed live. It's deliberately not built, because a background Python process reading the camera on a company-managed Mac isn't worth the policy risk. Outside OBS, the Mac stays open-loop.

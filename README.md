@@ -95,7 +95,10 @@ keylight-watch --no-auto        # Sessions only, no auto-brightness
 
 Session detection:
 - **Linux:** scans `/proc/*/fd` for your processes holding the card or the virtual camera. Processes in `ignore_processes` don't count, which is how OBS's own hold on the card is excluded. Devices are resolved again on every poll, so `/dev/videoN` renumbering doesn't matter. A poll costs about 10 ms.
-- **macOS:** reads CoreMediaIO's `DeviceIsRunningSomewhere` through `ctypes`. CoreMediaIO can't say *which* app runs a device, so while OBS is running, use of the physical card is attributed to OBS. That means calls on a Mac must either use the virtual camera or happen with OBS closed. The managed work Mac can't run the virtual camera, so close OBS for calls there.
+- **macOS:** reads CoreMediaIO's `DeviceIsRunningSomewhere` through `ctypes`. CoreMediaIO can't say *which* app runs a device, so the watcher asks OBS whether its own camera source is live (`GetSourceActive`).
+  - **OBS camera source live:** use of the card is attributed to OBS, so a call made on the card at that moment isn't detected. Recording or streaming still counts as a Session.
+  - **OBS closed, or open without a live camera source** (for example, a screen recording during a call): use of the card counts.
+  - **OBS running with its websocket off:** the watcher can't tell, so it assumes OBS holds the camera.
 - **OBS recording or streaming:** polled over obs-websocket. If OBS isn't running, the watcher retries every 10 s, quietly.
 
 When the camera disappears (a KVM switch), the light is left as is. If the camera stays gone longer than `absent_grace` (15 s), the Session is forgotten. One known gap: if a call moves to the other machine, neither machine Owns the light, so it stays on until you turn it off.
