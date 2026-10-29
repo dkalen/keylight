@@ -1,0 +1,71 @@
+# Every key with its default. Copy what you need into config.toml.
+# Per-machine or private values (like [location]) go in local.toml beside
+# config.toml, which is merged over it and never committed.
+
+[light]
+host = "192.168.1.50"      # IP/hostname; unset = mDNS discovery
+port = 9123
+timeout = 1.5              # seconds per attempt
+retries = 1                # extra attempts after a timeout / connection error
+mdns_fallback = true       # if host is unreachable, look for _elg._tcp on the local subnet
+min_brightness = 1         # floor for any brightness we send (API accepts 0-100)
+kelvin = 4700              # pinned colour temperature = the camera's white balance; unset = leave as is
+
+# [location]               # for the Sun Schedule; unset = always day_brightness
+# latitude = 40.71         # put these in local.toml, or set KEYLIGHT_LATITUDE /
+# longitude = -74.01       # KEYLIGHT_LONGITUDE; city-level precision is plenty
+
+# Presets: optional named levels for `keylight preset <name>` (turns the light on).
+# Nothing automatic uses them.
+# [presets.bright]
+# brightness = 60
+
+[watch]
+# Physical camera. Linux: globs under /dev/v4l/by-id, absolute paths, or
+# "name:<substring>" matched against /sys/class/video4linux/*/name.
+# macOS: substrings of the CoreMediaIO name or UID. `keylight-watch --list-devices`.
+linux_devices = ["usb-AVerMedia_Live_Streamer_CAP_4K_*-video-index0"]
+macos_devices = ["Live Streamer CAP 4K"]
+# The Hub's virtual camera: being read counts as a Session, being present doesn't
+# count as the camera being present.
+linux_virtual_devices = ["name:OBS Virtual Camera"]
+macos_virtual_devices = ["OBS Virtual Camera"]
+any_camera = false         # true: any camera counts (ignores the physical device lists)
+obs_sessions = true        # OBS recording/streaming counts as a Session
+
+on_action = "auto"         # "auto" (Sun Schedule + kelvin), "restore", or "preset:<name>"
+on_delay = 2.0             # a Session must last this long before the light turns on
+off_delay = 5.0            # ...and be over this long before it turns off
+absent_grace = 15.0        # camera vanished (KVM switch) longer than this: forget the Session
+poll_interval = 1.5
+ignore_processes = ["obs"] # Linux: processes whose use of a device doesn't count
+
+[obs]
+host = "127.0.0.1"
+port = 4455
+# password = "..."         # default: read from OBS's own obs-websocket config.json
+# password_file = "~/.config/keylight/obs-password"
+# source = "Video Capture Device (V4L2)"   # default: first video capture input
+timeout = 2.0
+
+[auto]
+enabled = true
+interval = 6.0             # seconds between measurements
+target_luma = 0.42         # Key Side face luma, 0..1 sRGB
+deadband_stops = 0.15
+gain = 0.5
+max_step_stops = 0.33      # most a single update may move
+min_brightness = 5
+max_brightness = 80
+fade_ms = 3000
+manual_pause_min = 10.0    # any manual change pauses auto-brightness this long
+ratio_mode = true
+max_stops_under = 1.0      # face at most this far under the background
+# background_roi = [0.0, 0.0, 0.3, 1.0]   # x, y, w, h normalized; unset = auto
+key_side = "left"          # the subject's side the light is on
+mirrored = false
+day_brightness = 45        # Sun Schedule endpoints
+night_brightness = 20
+screenshot_width = 480
+min_face_score = 0.7
+# model = "~/path/to/face_detection_yunet_2023mar.onnx"

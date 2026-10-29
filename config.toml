@@ -1,0 +1,25 @@
+# The live config for both machines. The installers symlink
+# ~/.config/keylight/config.toml to this file, so `git pull` updates it.
+# Reference for every key: config.example.toml and the README.
+
+[light]
+host = "192.168.1.210"          # give the light a DHCP static mapping
+kelvin = 4700                   # pinned to the a6000's white balance (ADR 0002)
+
+# [location] is per machine: put it in ~/.config/keylight/local.toml (not in git),
+# or set KEYLIGHT_LATITUDE / KEYLIGHT_LONGITUDE. See the README.
+
+[watch]
+linux_devices = ["usb-AVerMedia_Live_Streamer_CAP_4K_*-video-index0"]
+linux_virtual_devices = ["name:OBS Virtual Camera"]
+macos_devices = ["Live Streamer CAP 4K"]
+macos_virtual_devices = ["OBS Virtual Camera"]
+ignore_processes = ["obs"]      # the Hub's own hold on the card never counts
+on_action = "auto"
+
+[obs]
+# password: read from OBS's own obs-websocket config on each machine
+
+[auto]
+key_side = "left"
+# background_roi = [x, y, w, h]  # calibrate: keylight auto --save-frame ~/Pictures

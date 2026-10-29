@@ -1,0 +1,352 @@
+"""`keylight-watch`: keep the Light on for exactly as long as a Session lasts.
+
+A Session is any of: a non-Hub app reading the camera, an app reading the Hub's
+virtual camera, or OBS recording/streaming (see GLOSSARY.md).
+
+Rules:
+  - Session for `on_delay` s: if the Light is off, apply `on_action` and remember
+    that we turned it on (Owned). If it was already on, only bring it to the
+    pinned colour temperature.
+  - Session over for `off_delay` s: turn the Light off, but only if Owned.
+  - Auto-brightness (if enabled) runs for the whole Session, Owned or not.
+  - We act on transitions only, so manual changes are never fought.
+  - Camera vanishes (KVM switch): no light change. If it stays gone longer than
+    `absent_grace`, the Session is forgotten (another machine may own the light now).
+"""
+
+from __future__ import annotations
+
+import argparse
+import enum
+import logging
+import signal
+import sys
+import threading
+import time
+from typing import Callable
+
+from datetime import datetime
+
+from .core import (Config, KeyLight, KeylightError, Observation, Preset, clamp, kelvin_to_mired, load_config,
+                   run_with_fallback)
+from .sun import schedule_brightness
+
+log = logging.getLogger("keylight-watch")
+
+
+class Event(enum.Enum):
+    START = "start"
+    STOP = "stop"
+    LOST = "lost"
+
+
+class SessionTracker:
+    """Debounces raw observations into session start/stop/lost events.
+
+    An event is repeated on every update until `commit()` is called, so a
+    failed light action is retried on the next poll."""
+
+    def __init__(self, on_delay: float, off_delay: float, absent_grace: float):
+        self.on_delay = on_delay
+        self.off_delay = off_delay
+        self.absent_grace = absent_grace
+        self.active = False
+        self._want: bool | None = None
+        self._since = 0.0
+        self._absent_since: float | None = None
+
+    def update(self, now: float, obs: Observation) -> Event | None:
+        if obs is Observation.ABSENT:
+            self._want = None
+            if self._absent_since is None:
+                self._absent_since = now
+            if self.active and now - self._absent_since >= self.absent_grace:
+                return Event.LOST
+            return None
+        self._absent_since = None
+        want = obs is Observation.IN_USE
+        if want == self.active:
+            self._want = None
+            return None
+        if self._want != want:
+            self._want, self._since = want, now
+        if now - self._since >= (self.on_delay if want else self.off_delay):
+            return Event.START if want else Event.STOP
+        return None
+
+    def commit(self, event: Event) -> None:
+        self.active = event is Event.START
+        self._want = None
+
+
+class ObsSessionProbe:
+    """IN_USE while OBS is recording or streaming; IDLE otherwise (including OBS not running)."""
+    RETRY = 10.0
+
+    def __init__(self, cfg: Config, clock: Callable[[], float] = time.monotonic, client_factory=None):
+        self.cfg = cfg
+        self.clock = clock
+        if client_factory is None:
+            from .obs import ObsClient
+            client_factory = ObsClient
+        self.client_factory = client_factory
+        self.client = None
+        self._next_try = 0.0
+        self._reason: str | None = None
+
+    @property
+    def connected(self) -> bool:
+        return self.client is not None
+
+    def _note(self, reason: str | None, level: int = logging.DEBUG) -> None:
+        if reason != self._reason:
+            if reason:
+                log.log(level, "OBS: %s", reason)
+            elif self._reason:
+                log.info("OBS websocket connected")
+            self._reason = reason
+
+    def poll(self) -> Observation:
+        from .obs import ObsError, ObsUnavailable
+        if self.client is None:
+            if self.clock() < self._next_try:
+                return Observation.IDLE
+            self._next_try = self.clock() + self.RETRY
+            try:
+                self.client = self.client_factory(self.cfg.obs)
+                self._note(None)
+            except ObsUnavailable as e:
+                self._note(str(e))
+                return Observation.IDLE
+            except ObsError as e:
+                self._note(str(e), logging.WARNING)
+                return Observation.IDLE
+        try:
+            return Observation.IN_USE if self.client.recording_or_streaming() else Observation.IDLE
+        except (ObsUnavailable, ObsError) as e:
+            self._note(str(e))
+            self.client.close()
+            self.client = None
+            return Observation.IDLE
+
+    def describe(self) -> str:
+        return f"obs={'connected' if self.client else (self._reason or 'not connected')}"
+
+
+class SessionProbe:
+    """Combines the camera probe with OBS recording/streaming. The camera decides
+    presence (ABSENT); any source being in use makes a Session."""
+
+    def __init__(self, camera, obs: ObsSessionProbe | None = None):
+        self.camera = camera
+        self.obs = obs
+        self.any_camera = getattr(camera, "any_camera", False)
+
+    def poll(self) -> Observation:
+        cam = self.camera.poll()
+        if cam is Observation.IN_USE:
+            return cam
+        if self.obs is not None and self.obs.poll() is Observation.IN_USE:
+            return Observation.IN_USE
+        return cam
+
+    def describe(self) -> str:
+        parts = [self.camera.describe()]
+        if self.obs is not None:
+            self.obs.poll()
+            parts.append(self.obs.describe())
+        return "  ".join(parts)
+
+    def all_devices(self) -> list[str]:
+        return self.camera.all_devices()
+
+
+class Watcher:
+    def __init__(self, cfg: Config, probe, dry_run: bool = False,
+                 runner: Callable[[Callable[[KeyLight], object]], object] | None = None,
+                 clock: Callable[[], float] = time.monotonic,
+                 auto_factory: Callable[[], object] | None = None,
+                 now: Callable[[], datetime] = lambda: datetime.now().astimezone()):
+        self.cfg = cfg
+        self.probe = probe
+        self.dry_run = dry_run
+        self.clock = clock
+        self.now = now
+        self.runner = runner or (lambda fn: run_with_fallback(cfg, fn, warn=log.warning))
+        self.auto_factory = auto_factory
+        self.auto = None
+        w = cfg.watch
+        self.tracker = SessionTracker(w.on_delay, w.off_delay, w.absent_grace)
+        self.owned = False
+        self._failing = False
+        self._last_obs: Observation | None = None
+
+    def start_values(self) -> tuple[int | None, int | None]:
+        """(brightness, mired) the Light should come on with, per on_action."""
+        cfg, action = self.cfg, self.cfg.watch.on_action
+        pinned = kelvin_to_mired(cfg.kelvin) if cfg.kelvin else None
+        if action == "auto":
+            a = cfg.auto
+            b = schedule_brightness(self.now(), cfg.location.latitude, cfg.location.longitude,
+                                    a.day_brightness, a.night_brightness)
+            return clamp(b, a.min_brightness, a.max_brightness), pinned
+        if action == "restore":
+            return None, pinned          # the light remembers its last brightness
+        preset: Preset = cfg.presets[action.removeprefix("preset:")]
+        return preset.brightness, kelvin_to_mired(preset.kelvin) if preset.kelvin else pinned
+
+    def _turn_on(self, light: KeyLight) -> bool:
+        """Returns True if we turned the Light on (Owned). An already-on Light is
+        left as is, except that it's brought to the pinned colour temperature
+        (ADR 0002)."""
+        state = light.get_state()
+        if state.on:
+            pinned = kelvin_to_mired(self.cfg.kelvin) if self.cfg.kelvin else None
+            if pinned is not None and state.mired != pinned:
+                light.set_state(mired=pinned)
+                log.info("light already on: set colour temperature to pinned %d K", self.cfg.kelvin)
+            return False
+        brightness, mired = self.start_values()
+        light.set_state(on=True, brightness=brightness, mired=mired)
+        return True
+
+    def _start_auto(self) -> None:
+        if self.auto_factory and self.auto is None:
+            self.auto = self.auto_factory()
+            self.auto.start()
+
+    def _stop_auto(self) -> None:
+        if self.auto is not None:
+            self.auto.stop()
+            self.auto = None
+
+    def handle(self, event: Event) -> bool:
+        """Apply an event. Returns False if the light couldn't be reached (retry later)."""
+        if event is Event.LOST:
+            log.info("camera gone for %.0fs; forgetting session (light left as is)", self.cfg.watch.absent_grace)
+            self._stop_auto()
+            self.owned = False
+            return True
+        try:
+            if event is Event.START:
+                if self.dry_run:
+                    b, m = self.start_values()
+                    log.info("session started: would turn light on (%s: brightness=%s mired=%s)",
+                             self.cfg.watch.on_action, b, m)
+                    self.owned = True
+                else:
+                    self.owned = bool(self.runner(self._turn_on))
+                    log.info("session started: %s", f"light on ({self.cfg.watch.on_action})"
+                             if self.owned else "light was already on (not Owned; it stays on afterwards)")
+                self._start_auto()
+            else:
+                self._stop_auto()
+                if not self.owned:
+                    log.info("session ended: light wasn't turned on by us, leaving it alone")
+                elif self.dry_run:
+                    log.info("session ended: would turn light off")
+                else:
+                    self.runner(lambda light: light.set_state(on=False))
+                    log.info("session ended: light off")
+                self.owned = False
+        except KeylightError as e:
+            if not self._failing:
+                log.warning("%s (will keep retrying)", e)
+            self._failing = True
+            return False
+        if self._failing:
+            log.info("light reachable again")
+        self._failing = False
+        return True
+
+    def tick(self) -> None:
+        try:
+            obs = self.probe.poll()
+        except Exception as e:   # a probe glitch must never kill the watcher
+            log.debug("probe error: %s", e)
+            return
+        if obs is not self._last_obs:
+            log.debug("session probe: %s", obs.value)
+            if obs is Observation.ABSENT or self._last_obs is Observation.ABSENT:
+                log.info("camera device %s", "disappeared" if obs is Observation.ABSENT else "is back")
+            self._last_obs = obs
+        event = self.tracker.update(self.clock(), obs)
+        if event is not None and self.handle(event):
+            self.tracker.commit(event)
+
+    def run(self, stop: threading.Event) -> None:
+        try:
+            while not stop.is_set():
+                self.tick()
+                stop.wait(self.cfg.watch.poll_interval)
+        finally:
+            self._stop_auto()
+
+
+def make_probe(cfg: Config) -> SessionProbe:
+    w = cfg.watch
+    obs = ObsSessionProbe(cfg) if w.obs_sessions else None
+    if sys.platform == "darwin":
+        from .camera_macos import MacCameraProbe
+        camera = MacCameraProbe(w.macos_devices, w.any_camera, w.macos_virtual_devices,
+                                hub_running=(lambda: obs.connected) if obs else None)
+    elif sys.platform.startswith("linux"):
+        from .camera_linux import LinuxCameraProbe
+        camera = LinuxCameraProbe(w.linux_devices, w.any_camera, w.ignore_processes,
+                                  virtual_specs=w.linux_virtual_devices)
+    else:
+        raise KeylightError(f"unsupported platform: {sys.platform}")
+    return SessionProbe(camera, obs)
+
+
+def main(argv: list[str] | None = None) -> int:
+    from . import log as logsetup
+
+    p = argparse.ArgumentParser(prog="keylight-watch", description="Keep the Key Light on for the duration of each Session.")
+    p.add_argument("--config", help="config file (default ~/.config/keylight/config.toml)")
+    p.add_argument("-v", "--verbose", action="store_true", help="debug logging (includes every probe change and auto cycle)")
+    p.add_argument("--dry-run", action="store_true", help="log light actions instead of sending them")
+    p.add_argument("--probe", action="store_true", help="print what the session probe sees right now and exit")
+    p.add_argument("--list-devices", action="store_true", help="list cameras the probe can see and exit")
+    p.add_argument("--no-auto", action="store_true", help="disable auto-brightness")
+    args = p.parse_args(argv)
+
+    try:
+        cfg = load_config(args.config)
+        probe = make_probe(cfg)
+    except (KeylightError, OSError) as e:
+        print(f"keylight-watch: {e}", file=sys.stderr)
+        return getattr(e, "exit_code", 1)
+
+    if args.list_devices:
+        print("\n".join(probe.all_devices()) or "no cameras found")
+        return 0
+    if args.probe:
+        print(f"{probe.poll().value}  {probe.describe()}")
+        return 0
+
+    logsetup.setup("keylight-watch", args.verbose)
+    w = cfg.watch
+    devices = w.macos_devices + w.macos_virtual_devices if sys.platform == "darwin" else w.linux_devices + w.linux_virtual_devices
+    auto_on = cfg.auto.enabled and not args.no_auto
+    log.info("watching %s%s (on after %.0fs, off after %.0fs, light %s, auto-brightness %s)%s",
+             "any camera" if probe.any_camera else devices, " + OBS recording/streaming" if probe.obs else "",
+             w.on_delay, w.off_delay, cfg.host or "via mDNS", "on" if auto_on else "off",
+             " [dry run]" if args.dry_run else "")
+
+    runner = lambda fn: run_with_fallback(cfg, fn, warn=log.warning)  # noqa: E731
+    auto_factory = None
+    if auto_on:
+        from .auto import AutoBrightness
+        auto_factory = lambda: AutoBrightness(cfg, runner, dry_run=args.dry_run)  # noqa: E731
+
+    stop = threading.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, lambda *_: stop.set())
+    Watcher(cfg, probe, dry_run=args.dry_run, runner=runner, auto_factory=auto_factory).run(stop)
+    log.info("stopped")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

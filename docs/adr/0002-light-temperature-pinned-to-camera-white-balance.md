@@ -1,0 +1,3 @@
+# Light colour temperature is pinned to the camera's white balance
+
+The a6000 runs with a fixed, manual white balance, so the Light's colour temperature is the on-camera colour of your face. We pin both to 4700 K, a compromise between window daylight and warmer late-afternoon light, chosen because most calls are in the afternoon. Time of day changes only brightness. There are deliberately no warm "evening" settings: they would make your face orange on camera. Retuning the camera's white balance automatically through gphoto2 was rejected as more mechanism than the problem needs. The pin also applies at the start of a Session when you already turned the Light on yourself. Only the colour temperature is set; power and ownership are untouched.
