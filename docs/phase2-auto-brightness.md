@@ -2,7 +2,7 @@
 
 **Status:**
 - **Built:** tier 1 (the OBS Hub) and tier 3 (the Sun Schedule).
-- **Not built:** tier 2 (a shared stream). On Linux it was tested and rejected for now; on macOS it's waiting on the verify script. Details below.
+- **Not built:** tier 2 (a shared stream). On Linux it was tested and rejected until Firefox is fixed. On macOS it works, but we chose not to build it. Details below.
 
 Terms are defined in [GLOSSARY.md](../GLOSSARY.md), and the decisions are recorded in [ADR 0001](adr/0001-obs-hub-with-tiered-frame-sources.md) and [ADR 0002](adr/0002-light-temperature-pinned-to-camera-white-balance.md).
 
@@ -70,7 +70,11 @@ fade over fade_ms (3000)
 
 **Revisit when** Firefox fixes the framerate bug. A tier 2 implementation would also need Session detection based on the PipeWire graph rather than `/proc`, because our own PipeWire consumer would keep `pipewire` holding the card and the Session would never end.
 
-**macOS:** `scripts/verify-macos.sh` checks whether OpenCV can read the card while Photo Booth has it, and whether Photo Booth stays live while it does.
+**macOS: works, but deliberately not built** (2026-10-29).
+
+- A second reader (OpenCV through AVFoundation) got the card at 1920x1080 and 60 fps while Photo Booth stayed live. Concurrent access works.
+- It isn't built because the Mac is company-managed. A background Python process reading the camera during calls risks running into security policy, and the watcher would also need its own camera permission as a launchd agent. See ADR 0001.
+- That Mac also can't run the OBS Virtual Camera, because MDM hides the camera-extension approval. So it has no Hub: calls there use the card directly and get open-loop brightness, and OBS screenshots are used whenever OBS is open.
 
 ## Tuning
 

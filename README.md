@@ -26,7 +26,7 @@ While the Session lasts, auto-brightness adjusts the light using the best frame 
 | Tier | Frame source | Control |
 |---|---|---|
 | 1 | OBS screenshots of the camera source, over obs-websocket | closed-loop: Key Side of your face toward a target, and within 1 stop of the background |
-| 2 | a shared stream next to the call app | Linux: rejected for now (Firefox PipeWire bug); macOS: pending tests (see [Phase 2](docs/phase2-auto-brightness.md#tier-2)) |
+| 2 | a shared stream next to the call app | not built. Linux: blocked by a Firefox PipeWire bug; macOS: works, but skipped on the managed work Mac (see [Phase 2](docs/phase2-auto-brightness.md#tier-2)) |
 | 3 | none | open-loop: follow the Sun Schedule |
 
 How closed-loop control behaves:
@@ -95,7 +95,7 @@ keylight-watch --no-auto        # Sessions only, no auto-brightness
 
 Session detection:
 - **Linux:** scans `/proc/*/fd` for your processes holding the card or the virtual camera. Processes in `ignore_processes` don't count, which is how OBS's own hold on the card is excluded. Devices are resolved again on every poll, so `/dev/videoN` renumbering doesn't matter. A poll costs about 10 ms.
-- **macOS:** reads CoreMediaIO's `DeviceIsRunningSomewhere` through `ctypes`. CoreMediaIO can't say *which* app runs a device, so while OBS is running, use of the physical card is attributed to OBS. Calls on the Mac should therefore use the virtual camera.
+- **macOS:** reads CoreMediaIO's `DeviceIsRunningSomewhere` through `ctypes`. CoreMediaIO can't say *which* app runs a device, so while OBS is running, use of the physical card is attributed to OBS. That means calls on a Mac must either use the virtual camera or happen with OBS closed. The managed work Mac can't run the virtual camera, so close OBS for calls there.
 - **OBS recording or streaming:** polled over obs-websocket. If OBS isn't running, the watcher retries every 10 s, quietly.
 
 When the camera disappears (a KVM switch), the light is left as is. If the camera stays gone longer than `absent_grace` (15 s), the Session is forgotten. One known gap: if a call moves to the other machine, neither machine Owns the light, so it stays on until you turn it off.
