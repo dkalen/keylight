@@ -29,6 +29,15 @@ cat > "$PLIST" <<PLIST
 </plist>
 PLIST
 
+# bootout is asynchronous: wait until the old agent is really gone, or
+# bootstrap fails with "5: Input/output error".
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
-launchctl bootstrap "$DOMAIN" "$PLIST"
+for _ in $(seq 1 20); do
+    launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || break
+    sleep 0.5
+done
+if ! launchctl bootstrap "$DOMAIN" "$PLIST"; then
+    sleep 2
+    launchctl bootstrap "$DOMAIN" "$PLIST" || { echo "error: launchctl bootstrap failed (see above)" >&2; exit 1; }
+fi
 echo "$LABEL loaded; logs: log stream --predicate 'eventMessage BEGINSWITH \"keylight-watch:\"'"

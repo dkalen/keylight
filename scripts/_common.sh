@@ -1,6 +1,13 @@
 # Shared by the install/uninstall scripts. Sourced, not executed.
 set -euo pipefail
 
+if [ "$(id -u)" = 0 ]; then
+    echo "error: don't run this with sudo. It installs per-user files and a per-user service." >&2
+    echo "  If a sudo run already happened, fix ownership first:" >&2
+    echo "  sudo chown -R \"\$USER\" ~/.local/share/keylight ~/.local/bin/keylight ~/.local/bin/keylight-watch ~/.config/keylight ~/Library/LaunchAgents/local.keylight.watch.plist ~/Library/Caches/pip 2>/dev/null" >&2
+    exit 1
+fi
+
 SRC=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 PREFIX=${KEYLIGHT_PREFIX:-$HOME/.local}
 LIB=$PREFIX/share/keylight
