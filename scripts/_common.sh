@@ -105,7 +105,8 @@ install_package() {
         cat > "$BIN/$name" <<WRAPPER
 #!/bin/sh
 # Installed by keylight/scripts. Re-run the installer to update.
-PYTHONPATH="$LIB\${PYTHONPATH:+:\$PYTHONPATH}" exec "$py" -m $module "\$@"
+# -P: don't put the current directory on sys.path, so a checkout in \$PWD can't shadow the install
+PYTHONPATH="$LIB\${PYTHONPATH:+:\$PYTHONPATH}" exec "$py" -P -m $module "\$@"
 WRAPPER
         chmod 755 "$BIN/$name"
     done

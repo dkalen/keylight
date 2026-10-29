@@ -14,7 +14,9 @@ import syslog
 
 _SYSLOG_PRIORITY = {
     logging.DEBUG: syslog.LOG_DEBUG,
-    logging.INFO: syslog.LOG_INFO,
+    # NOTICE, not INFO: macOS doesn't persist syslog INFO in the unified log, so
+    # `log show` would never see Session events. journald treats both alike.
+    logging.INFO: syslog.LOG_NOTICE,
     logging.WARNING: syslog.LOG_WARNING,
     logging.ERROR: syslog.LOG_ERR,
     logging.CRITICAL: syslog.LOG_CRIT,

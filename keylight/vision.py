@@ -6,6 +6,7 @@ Imported lazily: the rest of keylight works without these dependencies.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import cv2
@@ -18,8 +19,12 @@ MODEL_NAME = "face_detection_yunet_2023mar.onnx"
 
 
 def default_model_path() -> Path:
-    # installed: <lib>/keylight/vision.py -> <lib>/models; repo checkout: <repo>/models
-    return Path(__file__).resolve().parent.parent / "models" / MODEL_NAME
+    """Beside the package (installed: <lib>/models; checkout: <repo>/models),
+    else the installer's default location."""
+    candidates = [Path(__file__).resolve().parent.parent / "models" / MODEL_NAME,
+                  Path(os.environ.get("KEYLIGHT_PREFIX", "~/.local")).expanduser()
+                  / "share" / "keylight" / "models" / MODEL_NAME]
+    return next((c for c in candidates if c.exists()), candidates[0])
 
 
 class Vision:
