@@ -47,7 +47,7 @@ scripts/uninstall-{linux,macos}.sh
 
 **`--with-auto`** creates a venv at `~/.local/share/keylight/venv` with numpy and opencv-python-headless. It also downloads the YuNet face model (232 KB, SHA-256 pinned). Without it, everything works except tier 1, so brightness follows the Sun Schedule. Once a machine has the venv, re-running the installer keeps it.
 
-The installers are idempotent: re-run one after `git pull` to update the code and restart the service. **The config lives in the repo** (`config.toml`), and the installer symlinks `~/.config/keylight/config.toml` to it, so both machines share one config through git. An existing non-symlink config is moved aside as `config.toml.bak-<date>`.
+The installers are idempotent: re-run one after `git pull` to update the code and restart the service. **The config lives in the repo** (`config.toml`), and the installer symlinks `~/.config/keylight/config.toml` to it, so both machines share one config through git. An existing non-symlink config is moved aside as `config.toml.bak-<date>`. Don't run the installers with `sudo`; they refuse to. If an earlier `sudo` run left root-owned files behind, `scripts/fix-ownership.sh` gives them back.
 
 ### One-time setup
 
