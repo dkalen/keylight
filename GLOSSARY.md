@@ -13,7 +13,7 @@ The capture card carrying the a6000's feed, as seen by the active machine.
 _Avoid_: webcam, video device
 
 **Session**:
-A period when you're on camera: a non-Hub app reading the Camera directly, an app reading the Hub's virtual camera, or the Hub recording or streaming. The Light follows Sessions.
+A period when you're on camera: a non-Hub app reading the Camera directly, an app reading the Hub's virtual camera, or the Hub recording or streaming with the Camera set up as one of its sources (whether or not the Camera is in the current scene). A screen-only recording isn't a Session. The Light follows Sessions.
 _Avoid_: call (a call is just one kind of Session), meeting, camera in use
 
 **Hub**:

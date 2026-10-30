@@ -113,14 +113,19 @@ class WatcherTests(unittest.TestCase):
             self.now += step
         self.watcher.tick()
 
-    def test_wait_time_uses_fallback_when_pushed_and_wakes_for_deadlines(self):
-        self.make(poll_interval=0.5, fallback_poll_interval=4)
+    def test_wait_time_polls_only_without_push(self):
+        self.make(poll_interval=0.5)
         self.assertEqual(self.watcher.wait_time(), 0.5)
         self.watcher.pushed = True
-        self.assertEqual(self.watcher.wait_time(), 4)
+        self.assertIsNone(self.watcher.wait_time())              # sleep until woken
         self.probe.obs = IN
         self.watcher.tick()                                     # on_delay=2 now pending
         self.assertAlmostEqual(self.watcher.wait_time(), 2.05)
+
+    def test_wait_time_includes_probe_retry(self):
+        self.probe.next_wake = lambda now: 4.0
+        self.watcher.pushed = True
+        self.assertAlmostEqual(self.watcher.wait_time(), 4.05)
 
     def test_push_wakes_the_loop(self):
         polls = []
@@ -137,7 +142,7 @@ class WatcherTests(unittest.TestCase):
 
         pushing = PushProbe()
         self.probe = pushing
-        self.make(fallback_poll_interval=60)
+        self.make(poll_interval=60)
         stop = threading.Event()
         t = threading.Thread(target=self.watcher.run, args=(stop,))
         t.start()
@@ -147,7 +152,7 @@ class WatcherTests(unittest.TestCase):
             before = len(polls)
             pushing.on_change()
             self.assertTrue(wait_for(lambda: len(polls) > before))
-            self.assertGreater(len(polls), before)               # woke long before the 60 s fallback
+            self.assertGreater(len(polls), before)               # woke at once, though nothing is pending
         finally:
             stop.set()
             self.watcher.wake()
@@ -252,14 +257,19 @@ class FakeObsClient:
     fail = False
     camera_live = False
     sources: list[str] = ["Video Capture Device"]
+    connects = 0
 
-    def __init__(self, _cfg):
+    def __init__(self, _cfg, events=0):
+        FakeObsClient.connects += 1
         if FakeObsClient.fail:
             from keylight.obs import ObsUnavailable
             raise ObsUnavailable("refused")
 
     def recording_or_streaming(self):
         return FakeObsClient.active
+
+    def has_camera_input(self):
+        return bool(FakeObsClient.sources)
 
     def capture_source(self):
         from keylight.obs import ObsError
@@ -281,6 +291,7 @@ class SessionProbeTests(unittest.TestCase):
         FakeObsClient.fail = False
         FakeObsClient.camera_live = False
         FakeObsClient.sources = ["Video Capture Device"]
+        FakeObsClient.connects = 0
         self.cam = FakeProbe()
         self.now = 0.0
         self.obs = ObsSessionProbe(parse_config({}), clock=lambda: self.now, client_factory=FakeObsClient)
@@ -293,6 +304,11 @@ class SessionProbeTests(unittest.TestCase):
         self.assertIs(self.probe.poll(), IDLE)
         FakeObsClient.active = True
         self.assertIs(self.probe.poll(), IN)
+
+    def test_screen_only_recording_is_not_a_session(self):
+        FakeObsClient.active = True
+        FakeObsClient.sources = []
+        self.assertIs(self.probe.poll(), IDLE)
 
     def test_recording_counts_even_when_camera_absent(self):
         self.cam.obs = GONE
@@ -328,6 +344,106 @@ class SessionProbeTests(unittest.TestCase):
         self.assertIs(self.probe.poll(), IDLE)       # still backing off
         self.now += ObsSessionProbe.RETRY
         self.assertIs(self.probe.poll(), IN)
+
+
+class FakeEvents:
+    def __init__(self, _cfg, on_change):
+        self.on_change = on_change
+        self.alive = True
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class PushedObsProbeTests(unittest.TestCase):
+    """ObsSessionProbe after listen(): connects only when kicked, with backoff."""
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        FakeObsClient.active = False
+        FakeObsClient.fail = False
+        FakeObsClient.sources = ["Video Capture Device"]
+        FakeObsClient.connects = 0
+        self.now = 0.0
+        self.events = []
+        self.obs = ObsSessionProbe(parse_config({}), clock=lambda: self.now, client_factory=FakeObsClient,
+                                   events_factory=lambda cfg, cb: self.events.append(FakeEvents(cfg, cb))
+                                   or self.events[-1])
+
+    def tearDown(self):
+        logging.disable(logging.NOTSET)
+
+    def test_connects_at_listen_and_opens_event_stream(self):
+        self.obs.listen(lambda: None)
+        FakeObsClient.active = True
+        self.assertIs(self.obs.poll(), IN)
+        self.assertEqual(len(self.events), 1)
+
+    def test_backoff_then_gives_up_until_kicked(self):
+        FakeObsClient.fail = True
+        self.obs.listen(lambda: None)
+        waits = []
+        for _ in range(10):
+            self.obs.poll()
+            due = self.obs.next_wake(self.now)
+            if due is None:
+                break
+            waits.append(due)
+            self.now += due
+        self.assertEqual(waits, list(ObsSessionProbe.BACKOFF))
+        self.assertEqual(FakeObsClient.connects, 1 + len(ObsSessionProbe.BACKOFF))
+        self.now += 1000
+        self.obs.poll()
+        self.assertEqual(FakeObsClient.connects, 1 + len(ObsSessionProbe.BACKOFF))   # quiet: no polling
+        FakeObsClient.fail = False
+        self.obs.kick()                                  # a camera changed: OBS may have started
+        FakeObsClient.active = True
+        self.assertIs(self.obs.poll(), IN)
+
+    def test_backoff_succeeds_when_obs_comes_up(self):
+        FakeObsClient.fail = True
+        self.obs.listen(lambda: None)
+        self.obs.poll()
+        FakeObsClient.fail, FakeObsClient.active = False, True
+        self.assertIs(self.obs.poll(), IDLE)             # not due yet
+        self.now += ObsSessionProbe.BACKOFF[0]
+        self.assertIs(self.obs.poll(), IN)
+        self.assertIsNone(self.obs.next_wake(self.now))
+
+    def test_dead_event_stream_disconnects_and_waits_for_kick(self):
+        self.obs.listen(lambda: None)
+        self.obs.poll()
+        self.events[-1].alive = False                    # OBS quit
+        FakeObsClient.fail = True
+        self.assertIs(self.obs.poll(), IDLE)
+        self.assertFalse(self.obs.connected)
+        self.assertTrue(self.events[-1].closed)
+        self.assertIsNone(self.obs.next_wake(self.now))
+
+    def test_camera_change_kicks_obs(self):
+        class Cam(FakeProbe):
+            def listen(self, cb):
+                self.cb = cb
+                return True
+        cam = Cam()
+        probe = SessionProbe(cam, self.obs)
+        FakeObsClient.fail = True
+        self.assertTrue(probe.listen(lambda: None))
+        for _ in range(10):                             # exhaust the backoff
+            probe.poll()
+            self.now += 100
+        before = FakeObsClient.connects
+        FakeObsClient.fail = False
+        cam.cb()
+        probe.poll()
+        self.assertEqual(FakeObsClient.connects, before + 1)
+        self.assertTrue(self.obs.connected)
+
+    def test_no_camera_push_means_obs_polls(self):
+        probe = SessionProbe(FakeProbe(), self.obs)
+        self.assertFalse(probe.listen(lambda: None))
+        self.assertFalse(self.obs.pushed)
 
 
 class EntryPointTests(unittest.TestCase):

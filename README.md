@@ -13,7 +13,7 @@ The terms used here (Session, Hub, Owned, Key Side, Sun Schedule and others) are
 A **Session** is any of these:
 - A non-OBS app reading the capture card directly. This means calls still work when OBS is closed or broken.
 - An app reading the **OBS Virtual Camera**. This is the normal setup, with OBS as the Hub.
-- **OBS recording or streaming.**
+- **OBS recording or streaming** with the camera set up as one of its sources, whether or not it's in the current scene. A screen-only recording doesn't count.
 
 When a Session starts, the watcher turns the light on with these settings:
 - **Colour temperature:** the pinned temperature, 4700 K, which matches the camera's white balance ([ADR 0002](docs/adr/0002-light-temperature-pinned-to-camera-white-balance.md)).
@@ -93,13 +93,14 @@ keylight-watch -v --dry-run     # foreground; logs every decision, including eac
 keylight-watch --no-auto        # Sessions only, no auto-brightness
 ```
 
-Session detection:
-- **Linux:** scans `/proc/*/fd` for your processes holding the card or the virtual camera. Processes in `ignore_processes` don't count, which is how OBS's own hold on the card is excluded. Devices are resolved again on every poll, so `/dev/videoN` renumbering doesn't matter. A poll costs about 10 ms.
-- **macOS:** reads CoreMediaIO's `DeviceIsRunningSomewhere` through `ctypes`, with CoreMediaIO listeners pushing every change (a camera starting or stopping, a camera arriving or leaving), so a call is seen at once. It still polls every `fallback_poll_interval` (2 s) for OBS recording/streaming and as a safety net. CoreMediaIO delivers those notifications, and refreshes its device list, only through the main thread's run loop, so the watcher runs one there. CoreMediaIO can't say *which* app runs a device, so the watcher asks OBS whether its own camera source is live (`GetSourceActive`).
+Session detection is pushed, not polled. Each change wakes the watcher, which then re-reads the real state, so a missed event only delays things until the next one. Between events it sleeps; when idle it uses no CPU at all.
+- **Linux:** inotify reports every open or close of a `/dev/video*` node, and video nodes or their `by-id` links appearing or disappearing (KVM switch, renumbering). inotify can't say who opened a node, so each event triggers a scan of `/proc/*/fd` for your processes holding the card or the virtual camera. Processes in `ignore_processes` don't count, which is how OBS's own hold on the card is excluded. A scan costs about 10 ms.
+- **macOS:** CoreMediaIO listeners report a camera starting or stopping, or a camera arriving or leaving, and the watcher reads `DeviceIsRunningSomewhere` through `ctypes`. CoreMediaIO delivers those notifications, and refreshes its device list, only through the main thread's run loop, so the watcher runs one there. CoreMediaIO can't say *which* app runs a device, so the watcher asks OBS whether its own camera source is live (`GetSourceActive`).
   - **OBS camera source live:** use of the card is attributed to OBS, so a call made on the card at that moment isn't detected. Recording or streaming still counts as a Session.
   - **OBS closed, or open without a live camera source** (for example, a screen recording during a call): use of the card counts.
   - **OBS running with its websocket off:** the watcher can't tell, so it assumes OBS holds the camera.
-- **OBS recording or streaming:** polled over obs-websocket. If OBS isn't running, the watcher retries every 10 s, quietly.
+- **OBS:** a second, events-only obs-websocket connection reports recordings, streams and the virtual camera starting or stopping, camera inputs being added or removed, the camera source becoming live or hidden, and OBS quitting. While OBS isn't running there's nothing to listen to, so the watcher tries to connect when a camera changes (OBS opening the card is how a starting OBS shows up), retrying after 1, 2, 4, 8 and 16 s, then waiting for the next camera change.
+- **Fallback:** if the camera can't push changes (inotify or CoreMediaIO unavailable), the watcher logs it and polls everything every `poll_interval`.
 
 When the camera disappears (a KVM switch), the light is left as is. If the camera stays gone longer than `absent_grace` (15 s), the Session is forgotten. One known gap: if a call moves to the other machine, neither machine Owns the light, so it stays on until you turn it off.
 

@@ -13,12 +13,26 @@ import os
 import socket
 import struct
 import sys
+import threading
 from pathlib import Path
+from typing import Callable
 
 from .core import KeylightError, ObsConfig
 
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-OP_HELLO, OP_IDENTIFY, OP_IDENTIFIED, OP_REQUEST, OP_RESPONSE = 0, 1, 2, 6, 7
+OP_HELLO, OP_IDENTIFY, OP_IDENTIFIED, OP_EVENT, OP_REQUEST, OP_RESPONSE = 0, 1, 2, 5, 6, 7
+
+# obs-websocket EventSubscription bits. The two "state changed" ones are
+# high-volume categories that aren't part of the normal set, so ask for them.
+SUB_GENERAL, SUB_INPUTS, SUB_OUTPUTS = 1 << 0, 1 << 3, 1 << 6
+SUB_INPUT_ACTIVE, SUB_INPUT_SHOW = 1 << 17, 1 << 18
+SESSION_EVENT_MASK = SUB_GENERAL | SUB_INPUTS | SUB_OUTPUTS | SUB_INPUT_ACTIVE | SUB_INPUT_SHOW
+# Events that can change whether there's a Session, or whether OBS holds the camera.
+SESSION_EVENTS = frozenset({
+    "RecordStateChanged", "StreamStateChanged", "VirtualcamStateChanged",
+    "InputCreated", "InputRemoved", "InputNameChanged", "InputSettingsChanged",
+    "InputActiveStateChanged", "InputShowStateChanged", "ExitStarted",
+})
 
 
 class ObsUnavailable(KeylightError):
@@ -154,19 +168,24 @@ class WebSocket:
 
     def close(self) -> None:
         try:
+            self.sock.shutdown(socket.SHUT_RDWR)   # wakes a thread blocked in recv
+        except OSError:
+            pass
+        try:
             self.sock.close()
         except OSError:
             pass
 
 
 class ObsClient:
-    def __init__(self, cfg: ObsConfig):
+    def __init__(self, cfg: ObsConfig, events: int = 0):
+        """`events`: EventSubscription bits; 0 for a request-only connection."""
         self.cfg = cfg
         self.ws = WebSocket(cfg.host, cfg.port, cfg.timeout, "obswebsocket.json")
         self._next_id = 0
         try:
             hello = self._recv_op(OP_HELLO)
-            identify: dict = {"rpcVersion": 1, "eventSubscriptions": 0}
+            identify: dict = {"rpcVersion": 1, "eventSubscriptions": events}
             auth = hello.get("authentication")
             if auth:
                 password = resolve_password(cfg)
@@ -190,6 +209,11 @@ class ObsClient:
             msg = json.loads(self.ws.recv_text())
             if msg.get("op") == op:
                 return msg.get("d", {})
+
+    def next_event(self) -> str:
+        """Block until OBS sends an event (no timeout); returns its eventType."""
+        self.ws.sock.settimeout(None)
+        return self._recv_op(OP_EVENT).get("eventType", "")
 
     def request(self, request_type: str, data: dict | None = None) -> dict:
         self._next_id += 1
@@ -233,6 +257,13 @@ class ObsClient:
             raise ObsError("no camera input found in OBS; set [obs] source")
         return inputs[0][0]
 
+    def has_camera_input(self) -> bool:
+        """Is the Camera set up as a source in OBS (in any scene, live or not)?"""
+        if self.cfg.source:
+            return any(i.get("inputName") == self.cfg.source
+                       for i in self.request("GetInputList").get("inputs", []))
+        return bool(self.capture_inputs())
+
     def source_active(self, source: str) -> bool:
         """True if OBS is showing the source anywhere (program or preview), which
         is when OBS itself is pulling frames from the device."""
@@ -251,3 +282,34 @@ class ObsClient:
 
     def close(self) -> None:
         self.ws.close()
+
+
+class ObsEventListener:
+    """A second, events-only connection to OBS. Calls `on_change` (on its own
+    thread) for every event in SESSION_EVENTS, and once more when the connection
+    ends, so the watcher re-reads the real state. It never interprets events."""
+
+    def __init__(self, cfg: ObsConfig, on_change: Callable[[], None],
+                 client_factory: Callable[..., ObsClient] = ObsClient):
+        self.on_change = on_change
+        self.client = client_factory(cfg, events=SESSION_EVENT_MASK)
+        self.alive = True
+        self._closing = False
+        threading.Thread(target=self._run, name="obs-events", daemon=True).start()
+
+    def _run(self) -> None:
+        try:
+            while True:
+                if self.client.next_event() in SESSION_EVENTS:
+                    self.on_change()
+        except (KeylightError, OSError, ValueError):
+            pass
+        finally:
+            self.alive = False
+            self.client.close()
+            if not self._closing:
+                self.on_change()
+
+    def close(self) -> None:
+        self._closing = True
+        self.client.close()

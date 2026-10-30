@@ -1,7 +1,8 @@
 """`keylight-watch`: keep the Light on for exactly as long as a Session lasts.
 
 A Session is any of: a non-Hub app reading the camera, an app reading the Hub's
-virtual camera, or OBS recording/streaming (see GLOSSARY.md).
+virtual camera, or OBS recording/streaming with the camera set up as one of its
+sources (see GLOSSARY.md).
 
 Rules:
   - Session for `on_delay` s: if the Light is off, apply `on_action` and remember
@@ -13,10 +14,12 @@ Rules:
   - Camera vanishes (KVM switch): no light change. If it stays gone longer than
     `absent_grace`, the Session is forgotten (another machine may own the light now).
 
-On macOS the camera probe pushes changes (CoreMediaIO listeners, delivered via
-the main thread's run loop), so the loop wakes at once and otherwise polls only
-every `fallback_poll_interval` s, for OBS recording/streaming and as a safety
-net. Elsewhere it polls every `poll_interval` s.
+Changes are pushed, not polled: CoreMediaIO listeners (macOS, delivered via the
+main thread's run loop) or inotify on the video nodes and /dev (Linux), plus a
+second, events-only OBS websocket connection. Every wake re-reads the real
+state, so a missed event only delays things until the next one. Between events
+the loop sleeps, waking only for pending on/off/absent deadlines and OBS
+connection retries. If the camera can't notify, it polls every `poll_interval` s.
 """
 
 from __future__ import annotations
@@ -93,24 +96,60 @@ class SessionTracker:
 
 
 class ObsSessionProbe:
-    """IN_USE while OBS is recording or streaming; IDLE otherwise (including OBS not running)."""
-    RETRY = 10.0
+    """IN_USE while OBS is recording or streaming with the Camera set up as one
+    of its sources; IDLE otherwise (screen-only setups, OBS not running).
 
-    def __init__(self, cfg: Config, clock: Callable[[], float] = time.monotonic, client_factory=None):
+    Pushed mode (after `listen()`): a second connection delivers OBS's events, and
+    OBS is only (re)connected after `kick()` (a camera changed: OBS may have just
+    started), retrying with BACKOFF and then giving up until the next kick.
+    Otherwise (one-off `--probe`, or no camera notifications) it retries every RETRY s."""
+    RETRY = 10.0
+    BACKOFF = (1.0, 2.0, 4.0, 8.0, 16.0)
+
+    def __init__(self, cfg: Config, clock: Callable[[], float] = time.monotonic, client_factory=None,
+                 events_factory=None):
         self.cfg = cfg
         self.clock = clock
         if client_factory is None:
             from .obs import ObsClient
             client_factory = ObsClient
+        if events_factory is None:
+            from .obs import ObsEventListener
+            events_factory = lambda cfg, on_change: ObsEventListener(cfg, on_change, client_factory)  # noqa: E731
         self.client_factory = client_factory
+        self.events_factory = events_factory
         self.client = None
+        self.events = None
         self._source: str | None = None
         self._next_try = 0.0
         self._reason: str | None = None
+        self._on_change: Callable[[], None] | None = None
+        self._kicked = False
+        self._retry_at: float | None = None
+        self._attempt = 0
 
     @property
     def connected(self) -> bool:
         return self.client is not None
+
+    @property
+    def pushed(self) -> bool:
+        return self._on_change is not None
+
+    def listen(self, on_change: Callable[[], None]) -> bool:
+        self._on_change = on_change
+        self.kick()                  # OBS may already be running
+        return True
+
+    def kick(self) -> None:
+        """A camera changed. Safe from any thread: only sets a flag for poll()."""
+        self._kicked = True
+
+    def next_wake(self, now: float) -> float | None:
+        """Seconds until the next connection retry, if one is scheduled."""
+        if self.client is None and self._retry_at is not None:
+            return max(0.0, self._retry_at - now)
+        return None
 
     def _note(self, reason: str | None, level: int = logging.DEBUG) -> None:
         if reason != self._reason:
@@ -120,28 +159,61 @@ class ObsSessionProbe:
                 log.info("OBS websocket connected")
             self._reason = reason
 
+    def _due(self) -> bool:
+        now = self.clock()
+        if not self.pushed:
+            if now < self._next_try:
+                return False
+            self._next_try = now + self.RETRY
+            return True
+        if self._kicked:
+            self._kicked = False
+            self._attempt, self._retry_at = 0, now
+        return self._retry_at is not None and now >= self._retry_at
+
+    def _connect(self) -> bool:
+        from .obs import ObsError, ObsUnavailable
+        if not self._due():
+            return False
+        try:
+            self.client = self.client_factory(self.cfg.obs)
+            if self.pushed:
+                self.events = self.events_factory(self.cfg.obs, self._on_change)
+        except (ObsUnavailable, ObsError) as e:
+            self._disconnect()
+            self._note(str(e), logging.WARNING if isinstance(e, ObsError) else logging.DEBUG)
+            if self.pushed:
+                if self._attempt < len(self.BACKOFF):
+                    self._retry_at = self.clock() + self.BACKOFF[self._attempt]
+                    self._attempt += 1
+                else:
+                    self._retry_at = None
+                    log.debug("OBS: not reachable; waiting for the next camera change")
+            return False
+        self._retry_at = None
+        self._note(None)
+        return True
+
+    def _disconnect(self) -> None:
+        for conn in (self.events, self.client):
+            if conn is not None:
+                conn.close()
+        self.client = self.events = None
+        self._source = None
+
     def poll(self) -> Observation:
         from .obs import ObsError, ObsUnavailable
-        if self.client is None:
-            if self.clock() < self._next_try:
-                return Observation.IDLE
-            self._next_try = self.clock() + self.RETRY
-            try:
-                self.client = self.client_factory(self.cfg.obs)
-                self._note(None)
-            except ObsUnavailable as e:
-                self._note(str(e))
-                return Observation.IDLE
-            except ObsError as e:
-                self._note(str(e), logging.WARNING)
-                return Observation.IDLE
+        if self.client is not None and self.events is not None and not self.events.alive:
+            self._disconnect()       # OBS quit or dropped us; reconnect only on a camera change
+        if self.client is None and not self._connect():
+            return Observation.IDLE
         try:
-            return Observation.IN_USE if self.client.recording_or_streaming() else Observation.IDLE
+            session = self.client.recording_or_streaming() and self.client.has_camera_input()
         except (ObsUnavailable, ObsError) as e:
             self._note(str(e))
-            self.client.close()
-            self.client = None
+            self._disconnect()
             return Observation.IDLE
+        return Observation.IN_USE if session else Observation.IDLE
 
     def camera_in_use_by_obs(self) -> bool | None:
         """Is OBS's own camera source live right now? None if OBS isn't reachable.
@@ -154,8 +226,7 @@ class ObsSessionProbe:
                 self._source = self.client.capture_source()
             return self.client.source_active(self._source)
         except ObsUnavailable:
-            self.client.close()
-            self.client = None
+            self._disconnect()
             return None
         except ObsError:
             self._source = None      # renamed/removed source, or no capture input
@@ -203,8 +274,23 @@ class SessionProbe:
         return self.camera.all_devices()
 
     def listen(self, on_change: Callable[[], None]) -> bool:
+        """Push mode: camera changes (which also prompt an OBS connection attempt,
+        since OBS opening the camera is how we notice it starting) and OBS events
+        wake the watcher. False if the camera can't notify; then everything polls."""
+        def camera_changed() -> None:
+            if self.obs is not None:
+                self.obs.kick()
+            on_change()
+
         listen = getattr(self.camera, "listen", None)
-        return bool(listen and listen(on_change))
+        if not (listen and listen(camera_changed)):
+            return False
+        if self.obs is not None:
+            self.obs.listen(on_change)
+        return True
+
+    def next_wake(self, now: float) -> float | None:
+        return self.obs.next_wake(now) if self.obs is not None else None
 
 
 class Watcher:
@@ -234,11 +320,16 @@ class Watcher:
         """Run the next tick now (a probe pushed a change, or we're stopping)."""
         self._wake.set()
 
-    def wait_time(self) -> float:
-        w = self.cfg.watch
-        interval = w.fallback_poll_interval if self.pushed else w.poll_interval
-        due = self.tracker.next_deadline(self.clock())
-        return interval if due is None else min(interval, due + 0.05)
+    def wait_time(self) -> float | None:
+        """How long to sleep before the next tick; None means until woken. Pushed
+        mode never polls: it wakes for events, pending on/off/absent deadlines
+        and OBS connection retries only."""
+        now = self.clock()
+        times = [t + 0.05 for t in (self.tracker.next_deadline(now),
+                                    getattr(self.probe, "next_wake", lambda _: None)(now)) if t is not None]
+        if not self.pushed:
+            times.append(self.cfg.watch.poll_interval)
+        return min(times) if times else None
 
     def start_values(self) -> tuple[int | None, int | None]:
         """(brightness, mired) the Light should come on with, per on_action."""
@@ -344,8 +435,7 @@ class Watcher:
         listen = getattr(self.probe, "listen", None)
         self.pushed = bool(listen and listen(self.wake))
         if self.pushed:
-            log.info("camera changes are pushed; polling every %.0fs as a fallback",
-                     self.cfg.watch.fallback_poll_interval)
+            log.info("camera and OBS changes are pushed; not polling")
         else:
             log.info("polling every %gs", self.cfg.watch.poll_interval)
         try:

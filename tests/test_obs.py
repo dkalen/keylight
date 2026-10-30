@@ -26,6 +26,7 @@ class FakeObs:
                        {"inputName": "Video Capture Device (V4L2)", "inputKind": "v4l2_input"}]
         self.requests = []
         self.active: set[str] = set()
+        self.subscribers = []           # (conn, eventSubscriptions)
         self.sock = socket.socket()
         self.sock.bind(("127.0.0.1", 0))
         self.sock.listen()
@@ -34,6 +35,18 @@ class FakeObs:
 
     def close(self):
         self.sock.close()
+
+    def emit(self, event_type):
+        for conn, mask in list(self.subscribers):
+            if mask:
+                try:
+                    self._send(conn, {"op": 5, "d": {"eventType": event_type, "eventIntent": 1, "eventData": {}}})
+                except OSError:
+                    pass
+
+    def drop_all(self):
+        for conn, _ in list(self.subscribers):
+            conn.shutdown(socket.SHUT_RDWR)
 
     def _accept(self):
         while True:
@@ -105,6 +118,7 @@ class FakeObs:
                 conn.sendall(self._frame(0x8, struct.pack("!H", 4009) + b"Authentication failed."))
                 return
             self._send(conn, {"op": 2, "d": {"negotiatedRpcVersion": 1}})
+            self.subscribers.append((conn, ident.get("eventSubscriptions", 0)))
             while True:
                 op, data = self._read_frame(conn)
                 if op == 0xA:
@@ -201,6 +215,62 @@ class ObsClientTests(unittest.TestCase):
         s.close()
         with self.assertRaises(ObsUnavailable):
             ObsClient(ObsConfig(host="127.0.0.1", port=port, timeout=1.0, password=""))
+
+
+class ObsEventTests(unittest.TestCase):
+    def setUp(self):
+        self.server = FakeObs()
+        self.changes = threading.Semaphore(0)
+
+    def tearDown(self):
+        self.server.close()
+
+    def cfg(self):
+        return ObsConfig(host="127.0.0.1", port=self.server.port, timeout=2.0, password="")
+
+    def wait_subscribed(self):
+        for _ in range(200):
+            if any(mask for _, mask in self.server.subscribers):
+                return
+            threading.Event().wait(0.01)
+        self.fail("listener never identified")
+
+    def test_session_events_wake_others_do_not(self):
+        listener = obs.ObsEventListener(self.cfg(), self.changes.release)
+        self.wait_subscribed()
+        self.assertIn(obs.SESSION_EVENT_MASK, [mask for _, mask in self.server.subscribers])
+        self.server.emit("InputVolumeChanged")
+        self.server.emit("RecordStateChanged")
+        self.assertTrue(self.changes.acquire(timeout=2))
+        self.assertFalse(self.changes.acquire(timeout=0.2))        # the volume event didn't count
+        listener.close()
+
+    def test_connection_drop_wakes_and_marks_dead(self):
+        listener = obs.ObsEventListener(self.cfg(), self.changes.release)
+        self.wait_subscribed()
+        self.server.drop_all()
+        self.assertTrue(self.changes.acquire(timeout=2))
+        for _ in range(100):
+            if not listener.alive:
+                break
+            threading.Event().wait(0.01)
+        self.assertFalse(listener.alive)
+
+    def test_close_does_not_wake(self):
+        listener = obs.ObsEventListener(self.cfg(), self.changes.release)
+        self.wait_subscribed()
+        listener.close()
+        self.assertFalse(self.changes.acquire(timeout=0.3))
+
+    def test_has_camera_input(self):
+        c = ObsClient(self.cfg())
+        self.assertTrue(c.has_camera_input())
+        self.server.inputs = [{"inputName": "Screen", "inputKind": "pipewire-screen-capture-source"}]
+        self.assertFalse(c.has_camera_input())
+        c.close()
+        c = ObsClient(ObsConfig(host="127.0.0.1", port=self.server.port, timeout=2.0, password="", source="Screen"))
+        self.assertTrue(c.has_camera_input())        # an explicitly configured source counts
+        c.close()
 
 
 class ObsAuthTests(unittest.TestCase):
