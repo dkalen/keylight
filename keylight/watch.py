@@ -105,6 +105,9 @@ class ObsSessionProbe:
     Otherwise (one-off `--probe`, or no camera notifications) it retries every RETRY s."""
     RETRY = 10.0
     BACKOFF = (1.0, 2.0, 4.0, 8.0, 16.0)
+    # Re-read OBS this long after each of its events: its status lags the event
+    # (GetRecordStatus still says active ~0.5 s after RecordStateChanged STOPPED).
+    SETTLE = (1.0, 3.0, 7.0)
 
     def __init__(self, cfg: Config, clock: Callable[[], float] = time.monotonic, client_factory=None,
                  events_factory=None):
@@ -127,6 +130,8 @@ class ObsSessionProbe:
         self._kicked = False
         self._retry_at: float | None = None
         self._attempt = 0
+        self._event_seen = False
+        self._settle_at: list[float] = []
 
     @property
     def connected(self) -> bool:
@@ -145,11 +150,17 @@ class ObsSessionProbe:
         """A camera changed. Safe from any thread: only sets a flag for poll()."""
         self._kicked = True
 
+    def _obs_event(self) -> None:
+        """From the event thread: only flags it for poll()."""
+        self._event_seen = True
+        self._on_change()
+
     def next_wake(self, now: float) -> float | None:
-        """Seconds until the next connection retry, if one is scheduled."""
+        """Seconds until the next connection retry or settle re-read, if any."""
+        times = list(self._settle_at)
         if self.client is None and self._retry_at is not None:
-            return max(0.0, self._retry_at - now)
-        return None
+            times.append(self._retry_at)
+        return max(0.0, min(times) - now) if times else None
 
     def _note(self, reason: str | None, level: int = logging.DEBUG) -> None:
         if reason != self._reason:
@@ -178,7 +189,7 @@ class ObsSessionProbe:
         try:
             self.client = self.client_factory(self.cfg.obs)
             if self.pushed:
-                self.events = self.events_factory(self.cfg.obs, self._on_change)
+                self.events = self.events_factory(self.cfg.obs, self._obs_event)
         except (ObsUnavailable, ObsError) as e:
             self._disconnect()
             self._note(str(e), logging.WARNING if isinstance(e, ObsError) else logging.DEBUG)
@@ -203,6 +214,11 @@ class ObsSessionProbe:
 
     def poll(self) -> Observation:
         from .obs import ObsError, ObsUnavailable
+        now = self.clock()
+        if self._event_seen:
+            self._event_seen = False
+            self._settle_at = [now + d for d in self.SETTLE]
+        self._settle_at = [t for t in self._settle_at if t > now]
         if self.client is not None and self.events is not None and not self.events.alive:
             self._disconnect()       # OBS quit or dropped us; reconnect only on a camera change
         if self.client is None and not self._connect():

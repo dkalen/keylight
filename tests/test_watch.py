@@ -411,6 +411,21 @@ class PushedObsProbeTests(unittest.TestCase):
         self.assertIs(self.obs.poll(), IN)
         self.assertIsNone(self.obs.next_wake(self.now))
 
+    def test_obs_event_schedules_settle_rereads(self):
+        # OBS still reports the recording active right after RecordStateChanged STOPPED
+        self.obs.listen(lambda: None)
+        FakeObsClient.active = True
+        self.assertIs(self.obs.poll(), IN)
+        self.events[-1].on_change()                      # STOPPED arrives; status hasn't caught up
+        self.assertIs(self.obs.poll(), IN)
+        self.assertEqual(self.obs.next_wake(self.now), ObsSessionProbe.SETTLE[0])
+        FakeObsClient.active = False                     # caught up
+        rereads = []
+        while (due := self.obs.next_wake(self.now)) is not None:
+            self.now += due + 0.05
+            rereads.append(self.obs.poll())
+        self.assertEqual(rereads, [IDLE] * len(ObsSessionProbe.SETTLE))
+
     def test_dead_event_stream_disconnects_and_waits_for_kick(self):
         self.obs.listen(lambda: None)
         self.obs.poll()
