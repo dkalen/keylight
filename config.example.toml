@@ -39,6 +39,18 @@ off_delay = 5.0            # ...and be over this long before it turns off
 absent_grace = 15.0        # camera vanished (KVM switch) longer than this: forget the Session
 poll_interval = 1.5        # only if change notifications are unavailable; normally nothing is polled
 ignore_processes = ["obs"] # Linux: processes whose use of a device doesn't count
+# macOS: while OBS's own camera source is live, the card counts as in use by a call
+# only if a call app is capturing a microphone (calls keep the mic open while muted).
+# Checked every 0.3 s, only while OBS holds the card (CoreAudio can't notify).
+# false: OBS holding the camera hides every other use of it.
+mic_sessions = true
+# Bundle-ID prefixes (an app's helpers match too). `keylight-watch --probe` shows
+# apps capturing that aren't listed. Setting this replaces the whole default list:
+# mic_call_apps = ["us.zoom.", "com.microsoft.teams", "com.google.Chrome",
+#                  "com.apple.Safari", "com.apple.WebKit.GPU", "org.mozilla.firefox",
+#                  "com.microsoft.edgemac", "company.thebrowser.Browser",
+#                  "com.tinyspeck.slackmacgap", "com.apple.FaceTime",
+#                  "com.apple.avconferenced", "com.cisco.webexmeetingsapp", "Cisco-Systems.Spark"]
 
 [obs]
 host = "127.0.0.1"

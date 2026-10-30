@@ -35,13 +35,15 @@ class FakeCMIO:
             fn()
 
 
-def make_probe(api, hub_holds_camera=lambda: None, virtual=()):
+def make_probe(api, hub_holds_camera=lambda: None, virtual=(), mic_users=None):
     """A MacCameraProbe on a fake CoreMediaIO (skips the real _CMIO())."""
     p = MacCameraProbe.__new__(MacCameraProbe)
     p.specs = ["live streamer cap 4k"]
     p.virtual_specs = [v.lower() for v in virtual]
     p.any_camera = False
     p.hub_holds_camera = hub_holds_camera
+    p.mic_users = mic_users
+    p._mic_watch = False
     p.api = api
     p._on_change = None
     p._watched = set()
@@ -59,8 +61,8 @@ class MacProbeTests(unittest.TestCase):
     def tearDown(self):
         self.pgrep.stop()
 
-    def probe(self, virtual=()):
-        return make_probe(self.api, lambda: self.obs_answer, virtual)
+    def probe(self, virtual=(), mic_users=None):
+        return make_probe(self.api, lambda: self.obs_answer, virtual, mic_users)
 
     def test_idle_and_direct_use(self):
         p = self.probe()
@@ -87,6 +89,51 @@ class MacProbeTests(unittest.TestCase):
         self.assertIs(self.probe().poll(), Observation.IDLE)
         self.pgrep_mock.return_value = False
         self.assertIs(self.probe().poll(), Observation.IN_USE)
+
+    def test_call_next_to_live_obs_counts_when_another_app_has_the_mic(self):
+        # OBS shows the card, and Zoom reads it too: only the mic tells them apart
+        self.api.running.add(CARD)
+        self.obs_answer = True
+        mic = []
+        p = self.probe(mic_users=lambda: mic)
+        self.assertIs(p.poll(), Observation.IDLE)          # OBS alone (its own mic is filtered out)
+        mic.append("us.zoom.xos")
+        self.assertIs(p.poll(), Observation.IN_USE)        # call joined
+        mic.clear()
+        self.assertIs(p.poll(), Observation.IDLE)          # call left, OBS still open
+
+    def test_mic_is_polled_only_while_obs_holds_the_card(self):
+        # CoreAudio can't push input changes, so the probe asks to be re-polled,
+        # but only in the one state where the mic decides the answer
+        mic = []
+        p = self.probe(mic_users=lambda: mic)
+        p.poll()
+        self.assertIsNone(p.next_wake(0))                   # card idle
+        self.api.running.add(CARD)
+        self.obs_answer = False
+        p.poll()
+        self.assertIsNone(p.next_wake(0))                   # call with OBS closed: camera push covers it
+        self.obs_answer = True
+        p.poll()
+        self.assertEqual(p.next_wake(0), MacCameraProbe.MIC_POLL)
+        mic.append("us.zoom.xos")
+        self.assertIs(p.poll(), Observation.IN_USE)
+        self.assertEqual(p.next_wake(0), MacCameraProbe.MIC_POLL)   # keep watching, to see the call end
+        self.api.running.clear()
+        p.poll()
+        self.assertIsNone(p.next_wake(0))                   # OBS stopped too
+
+    def test_no_mic_check_no_polling(self):
+        self.api.running.add(CARD)
+        self.obs_answer = True
+        p = self.probe()
+        p.poll()
+        self.assertIsNone(p.next_wake(0))
+
+    def test_mic_alone_is_not_a_session(self):
+        # a voice-only call (or dictation) with the camera off doesn't turn the light on
+        self.obs_answer = True
+        self.assertIs(self.probe(mic_users=lambda: ["us.zoom.xos"]).poll(), Observation.IDLE)
 
     def test_other_camera_ignored(self):
         self.api.running.add(FACETIME)

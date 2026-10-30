@@ -96,6 +96,25 @@ class WatchConfig:
     absent_grace: float = 15.0           # how long a vanished camera may stay gone and still count as the same Session
     poll_interval: float = 1.5           # only when the camera can't push changes (normally it does)
     ignore_processes: list[str] = field(default_factory=list)  # Linux: process names (comm) that don't count as camera users
+    # macOS, while OBS's own camera source is live: the card in use counts as a
+    # Session only if one of `mic_call_apps` is capturing a microphone (a call
+    # next to OBS; calls keep the mic open while muted). Off: OBS holding the
+    # camera hides every other use of it.
+    mic_sessions: bool = True
+    # Bundle-ID prefixes, so an app's helpers match too ("com.google.Chrome"
+    # covers com.google.Chrome.helper, which is what captures for a tab).
+    mic_call_apps: list[str] = field(default_factory=lambda: [
+        "us.zoom.",                      # Zoom (us.zoom.xos, us.zoom.caphost)
+        "com.microsoft.teams",           # Teams, classic and new (com.microsoft.teams2)
+        "com.google.Chrome",             # Meet and other browser calls
+        "com.apple.Safari", "com.apple.WebKit.GPU",   # Safari captures in WebKit's GPU process
+        "org.mozilla.firefox",
+        "com.microsoft.edgemac",
+        "company.thebrowser.Browser",    # Arc
+        "com.tinyspeck.slackmacgap",     # Slack huddles
+        "com.apple.FaceTime", "com.apple.avconferenced",
+        "com.cisco.webexmeetingsapp", "Cisco-Systems.Spark",   # Webex
+    ])
 
 
 @dataclass

@@ -315,7 +315,9 @@ class SessionProbe:
         return True
 
     def next_wake(self, now: float) -> float | None:
-        return self.obs.next_wake(now) if self.obs is not None else None
+        times = [t for t in (self.obs.next_wake(now) if self.obs is not None else None,
+                             getattr(self.camera, "next_wake", lambda _: None)(now)) if t is not None]
+        return min(times) if times else None
 
 
 class Watcher:
@@ -477,8 +479,16 @@ def make_probe(cfg: Config) -> SessionProbe:
     obs = ObsSessionProbe(cfg) if w.obs_sessions else None
     if sys.platform == "darwin":
         from .camera_macos import MacCameraProbe
+        mic_users = None
+        if w.mic_sessions:
+            from .mic_macos import MicUsers
+            try:
+                mic_users = MicUsers(w.mic_call_apps)
+            except OSError as e:
+                log.warning("microphone check unavailable (%s); a call while OBS shows the camera isn't detected", e)
         camera = MacCameraProbe(w.macos_devices, w.any_camera, w.macos_virtual_devices,
-                                hub_holds_camera=obs.camera_in_use_by_obs if obs else None)
+                                hub_holds_camera=obs.camera_in_use_by_obs if obs else None,
+                                mic_users=mic_users)
     elif sys.platform.startswith("linux"):
         from .camera_linux import LinuxCameraProbe
         camera = LinuxCameraProbe(w.linux_devices, w.any_camera, w.ignore_processes,

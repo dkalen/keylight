@@ -74,7 +74,7 @@ fade over fade_ms (3000)
 
 - A second reader (OpenCV through AVFoundation) got the card at 1920x1080 and 60 fps while Photo Booth stayed live. Concurrent access works.
 - It isn't built because the Mac is company-managed. A background Python process reading the camera during calls risks running into security policy, and the watcher would also need its own camera permission as a launchd agent. See ADR 0001.
-- That Mac also can't run the OBS Virtual Camera, because MDM hides the camera-extension approval. So it has no Hub: calls there use the card directly and get open-loop brightness, and OBS screenshots are used whenever OBS is open.
+- That Mac also can't run the OBS Virtual Camera, because MDM hides the camera-extension approval. So it has no Hub: calls there use the card directly. Opening OBS alongside a call (both read the card) gives closed-loop brightness; the call is still detected by its microphone use.
 
 ## Tuning
 

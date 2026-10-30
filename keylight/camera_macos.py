@@ -145,16 +145,22 @@ def obs_process_running() -> bool:
 class MacCameraProbe:
     """CoreMediaIO can't say *which* process runs a device. So while OBS's own
     camera source is live, the physical camera's use is attributed to OBS and
-    ignored (ADR 0001). OBS open with the camera source hidden, or with no camera
-    source at all, doesn't hide anyone else's use. Without the websocket we can't
-    tell, so a running OBS process is assumed to hold the camera."""
+    ignored (ADR 0001), unless `mic_users` reports a call app capturing a
+    microphone: then it's a call next to OBS. OBS open with the camera source
+    hidden, or with no camera source at all, doesn't hide anyone else's use.
+    Without the websocket we can't tell, so a running OBS process is assumed to
+    hold the camera."""
+    MIC_POLL = 0.3   # ~4 ms per check (MicUsers), so ~1.5% of a core, and only while OBS holds the card
 
     def __init__(self, specs: list[str], any_camera: bool = False, virtual_specs: list[str] = (),
-                 hub_holds_camera: Callable[[], bool | None] | None = None):
+                 hub_holds_camera: Callable[[], bool | None] | None = None,
+                 mic_users: Callable[[], list[str]] | None = None):
         self.specs = [s.lower() for s in specs]
         self.virtual_specs = [s.lower() for s in virtual_specs]
         self.any_camera = any_camera or not self.specs
         self.hub_holds_camera = hub_holds_camera
+        self.mic_users = mic_users
+        self._mic_watch = False      # last poll: card in use but attributed to OBS
         self.api = _CMIO()
         self._on_change: Callable[[], None] | None = None
         self._watched: set[int] = set()
@@ -210,14 +216,38 @@ class MacCameraProbe:
         physical = [(d, n) for d, n in self.matching() if (d, n) not in virtual]
         if not physical:
             return Observation.ABSENT
-        if any(self.api.running_somewhere(d) for d, _ in physical) and not self._hub_up():
-            return Observation.IN_USE
+        self._mic_watch = False
+        if any(self.api.running_somewhere(d) for d, _ in physical):
+            if not self._hub_up():
+                return Observation.IN_USE
+            self._mic_watch = self.mic_users is not None
+            if self._mic_in_use():
+                return Observation.IN_USE
         return Observation.IDLE
+
+    def next_wake(self, now: float) -> float | None:
+        """While OBS holds the card, re-check the microphone every MIC_POLL s.
+        CoreAudio accepts a listener on kAudioProcessPropertyIsRunningInput but
+        never fires it (macOS 26), and the input device's own running flag stays
+        set while OBS has the mic open, so a call joining or leaving next to OBS
+        pushes nothing. Nothing is polled otherwise."""
+        return self.MIC_POLL if self._mic_watch else None
+
+    def _mic_in_use(self) -> bool:
+        """Is a call app capturing a microphone (a call next to OBS)?"""
+        return bool(self.mic_users and self.mic_users())
 
     def describe(self) -> str:
         rows = [f"{name!r} running={self.api.running_somewhere(d)}"
                 for d, name in self.matching() + (self.matching(self.virtual_specs) if self.virtual_specs else [])]
-        return "devices=" + (", ".join(rows) if rows else "none") + f"  obs_holds_camera={self._hub_up()}"
+        out = "devices=" + (", ".join(rows) if rows else "none") + f"  obs_holds_camera={self._hub_up()}"
+        if self.mic_users is not None:
+            calls = self.mic_users()
+            others = [b for b in getattr(self.mic_users, "capturing", lambda: calls)() if b not in calls]
+            out += f"  mic_call_apps={', '.join(calls) or 'none'}"
+            if others:
+                out += f" (also capturing, not counted: {', '.join(others)})"
+        return out
 
     def all_devices(self) -> list[str]:
         return [f"{self.api.string(d, PROP_NAME)}  uid={self.api.string(d, PROP_UID)}" for d in self.api.devices()]

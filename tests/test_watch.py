@@ -323,6 +323,12 @@ class SessionProbeTests(unittest.TestCase):
         self.cam.obs = GONE
         self.assertIs(self.probe.poll(), GONE)
 
+    def test_next_wake_includes_camera_recheck(self):
+        # the macOS camera probe asks for a mic re-check while OBS holds the card
+        self.assertIsNone(self.probe.next_wake(self.now))
+        self.cam.next_wake = lambda now: 1.0
+        self.assertEqual(self.probe.next_wake(self.now), 1.0)
+
     def test_camera_in_use_by_obs(self):
         self.assertIsNone(self.obs.camera_in_use_by_obs())          # not connected yet
         self.obs.poll()
