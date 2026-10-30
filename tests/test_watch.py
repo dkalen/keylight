@@ -258,6 +258,7 @@ class FakeObsClient:
     camera_live = False
     sources: list[str] = ["Video Capture Device"]
     connects = 0
+    not_ready = False
 
     def __init__(self, _cfg, events=0):
         FakeObsClient.connects += 1
@@ -266,6 +267,9 @@ class FakeObsClient:
             raise ObsUnavailable("refused")
 
     def recording_or_streaming(self):
+        if FakeObsClient.not_ready:
+            from keylight.obs import ObsError
+            raise ObsError("GetRecordStatus failed: 207 OBS is not ready to perform the request")
         return FakeObsClient.active
 
     def has_camera_input(self):
@@ -365,6 +369,7 @@ class PushedObsProbeTests(unittest.TestCase):
         FakeObsClient.fail = False
         FakeObsClient.sources = ["Video Capture Device"]
         FakeObsClient.connects = 0
+        FakeObsClient.not_ready = False
         self.now = 0.0
         self.events = []
         self.obs = ObsSessionProbe(parse_config({}), clock=lambda: self.now, client_factory=FakeObsClient,
@@ -410,6 +415,22 @@ class PushedObsProbeTests(unittest.TestCase):
         self.now += ObsSessionProbe.BACKOFF[0]
         self.assertIs(self.obs.poll(), IN)
         self.assertIsNone(self.obs.next_wake(self.now))
+
+    def test_obs_still_starting_up_is_retried(self):
+        # OBS restarted: the camera event kicks a connect, which succeeds, but
+        # requests fail until OBS has finished loading
+        FakeObsClient.not_ready = True
+        self.obs.listen(lambda: None)
+        self.assertIs(self.obs.poll(), IDLE)
+        self.assertFalse(self.obs.connected)
+        self.assertEqual(self.obs.next_wake(self.now), ObsSessionProbe.BACKOFF[0])
+        self.now += ObsSessionProbe.BACKOFF[0]
+        self.obs.poll()                                   # still loading
+        self.assertEqual(self.obs.next_wake(self.now), ObsSessionProbe.BACKOFF[1])
+        FakeObsClient.not_ready, FakeObsClient.active = False, True
+        self.now += ObsSessionProbe.BACKOFF[1]
+        self.assertIs(self.obs.poll(), IN)
+        self.assertEqual(self.obs._attempt, 0)            # a working request resets the backoff
 
     def test_obs_event_schedules_settle_rereads(self):
         # OBS still reports the recording active right after RecordStateChanged STOPPED

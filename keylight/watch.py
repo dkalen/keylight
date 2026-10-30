@@ -193,17 +193,24 @@ class ObsSessionProbe:
         except (ObsUnavailable, ObsError) as e:
             self._disconnect()
             self._note(str(e), logging.WARNING if isinstance(e, ObsError) else logging.DEBUG)
-            if self.pushed:
-                if self._attempt < len(self.BACKOFF):
-                    self._retry_at = self.clock() + self.BACKOFF[self._attempt]
-                    self._attempt += 1
-                else:
-                    self._retry_at = None
-                    log.debug("OBS: not reachable; waiting for the next camera change")
+            self._schedule_retry()
             return False
         self._retry_at = None
         self._note(None)
         return True
+
+    def _schedule_retry(self) -> None:
+        """Next step of BACKOFF (pushed mode), or give up until the next kick. The
+        attempt count only resets on a kick or a successful request, so an OBS that
+        accepts connections but can't answer yet (still starting) keeps being retried."""
+        if not self.pushed:
+            return
+        if self._attempt < len(self.BACKOFF):
+            self._retry_at = self.clock() + self.BACKOFF[self._attempt]
+            self._attempt += 1
+        else:
+            self._retry_at = None
+            log.debug("OBS: not usable; waiting for the next camera change")
 
     def _disconnect(self) -> None:
         for conn in (self.events, self.client):
@@ -226,9 +233,11 @@ class ObsSessionProbe:
         try:
             session = self.client.recording_or_streaming() and self.client.has_camera_input()
         except (ObsUnavailable, ObsError) as e:
-            self._note(str(e))
+            self._note(str(e), logging.INFO)
             self._disconnect()
+            self._schedule_retry()     # e.g. "not ready" while OBS is still starting up
             return Observation.IDLE
+        self._attempt = 0
         return Observation.IN_USE if session else Observation.IDLE
 
     def camera_in_use_by_obs(self) -> bool | None:
