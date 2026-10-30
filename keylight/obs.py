@@ -52,6 +52,11 @@ def resolve_password(cfg: ObsConfig) -> str | None:
     return data.get("server_password") if data.get("auth_required", True) else None
 
 
+def is_camera_kind(kind: str) -> bool:
+    k = kind.lower()
+    return k.startswith(("v4l2", "dshow")) or "avcapture" in k or "av_capture" in k
+
+
 def auth_response(password: str, salt: str, challenge: str) -> str:
     secret = base64.b64encode(hashlib.sha256((password + salt).encode()).digest()).decode()
     return base64.b64encode(hashlib.sha256((secret + challenge).encode()).digest()).decode()
@@ -208,16 +213,25 @@ class ObsClient:
     def recording_or_streaming(self) -> bool:
         return self.output_active("GetRecordStatus") or self.output_active("GetStreamStatus")
 
+    def capture_inputs(self) -> list[tuple[str, str]]:
+        """(name, kind) of every camera/capture-card input. Matches all the known
+        kinds: v4l2_input; av_capture_input(_v2), macos-avcapture(-fast) ("Video
+        Capture Device" / "Capture Card Device" on macOS); dshow_input."""
+        out = []
+        for item in self.request("GetInputList").get("inputs", []):
+            kind = item.get("inputKind", "")
+            if is_camera_kind(kind):
+                out.append((item["inputName"], kind))
+        return out
+
     def capture_source(self) -> str:
-        """Configured source, else the first video capture input."""
+        """Configured source, else the first camera/capture-card input."""
         if self.cfg.source:
             return self.cfg.source
-        inputs = self.request("GetInputList").get("inputs", [])
-        for item in inputs:
-            kind = item.get("inputKind", "")
-            if kind in ("v4l2_input", "av_capture_input", "av_capture_input_v2", "macos-avcapture", "dshow_input"):
-                return item["inputName"]
-        raise ObsError("no video capture input found in OBS; set [obs] source")
+        inputs = self.capture_inputs()
+        if not inputs:
+            raise ObsError("no camera input found in OBS; set [obs] source")
+        return inputs[0][0]
 
     def source_active(self, source: str) -> bool:
         """True if OBS is showing the source anywhere (program or preview), which

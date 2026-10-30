@@ -179,6 +179,15 @@ class ObsClientTests(unittest.TestCase):
             c.source_active("missing")
         c.close()
 
+    def test_camera_kinds(self):
+        from keylight.obs import is_camera_kind
+        for kind in ("v4l2_input", "av_capture_input", "av_capture_input_v2", "macos-avcapture",
+                     "macos-avcapture-fast", "dshow_input"):
+            self.assertTrue(is_camera_kind(kind), kind)
+        for kind in ("screen_capture", "display_capture", "window_capture", "pulse_input_capture",
+                     "coreaudio_input_capture", "sck_audio_capture", "image_source"):
+            self.assertFalse(is_camera_kind(kind), kind)
+
     def test_request_failure(self):
         c = ObsClient(self.cfg(password=""))
         with self.assertRaises(ObsError):

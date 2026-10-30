@@ -172,12 +172,17 @@ class WatcherTests(unittest.TestCase):
         self.advance(IN, 6)
         self.assertEqual(self.mock.state["on"], 1)
 
-    def test_probe_exception_is_survived(self):
+    def test_probe_exception_is_survived_and_logged_once(self):
         class Broken:
             def poll(self):
                 raise OSError("boom")
         self.watcher.probe = Broken()
-        self.watcher.tick()
+        logging.disable(logging.NOTSET)
+        with self.assertLogs("keylight-watch", level="WARNING") as cm:
+            self.watcher.tick()
+            self.watcher.tick()
+            logging.getLogger("keylight-watch").warning("sentinel")
+        self.assertEqual(sum("session probe failed" in line for line in cm.output), 1)
 
 
 class FakeObsClient:
@@ -248,6 +253,11 @@ class SessionProbeTests(unittest.TestCase):
         FakeObsClient.camera_live = True
         self.obs.poll()
         self.assertFalse(self.obs.camera_in_use_by_obs())
+
+    def test_obs_connects_even_while_camera_in_use(self):
+        self.cam.obs = IN
+        self.probe.poll()
+        self.assertTrue(self.obs.connected)
 
     def test_obs_down_retries_after_backoff(self):
         FakeObsClient.fail = True

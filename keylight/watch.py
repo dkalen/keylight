@@ -149,7 +149,17 @@ class ObsSessionProbe:
             return False
 
     def describe(self) -> str:
-        return f"obs={'connected' if self.client else (self._reason or 'not connected')}"
+        if self.client is None:
+            return f"obs={self._reason or 'not connected'}"
+        from .obs import ObsError, ObsUnavailable
+        try:
+            cams = self.client.capture_inputs()
+            live = {name: self.client.source_active(name) for name, _ in cams}
+            recording = self.client.recording_or_streaming()
+        except (ObsError, ObsUnavailable) as e:
+            return f"obs=connected (query failed: {e})"
+        listed = ", ".join(f"{n!r} [{k}] live={live[n]}" for n, k in cams) or "none"
+        return f"obs=connected recording/streaming={recording} camera_inputs={listed}"
 
 
 class SessionProbe:
@@ -162,17 +172,17 @@ class SessionProbe:
         self.any_camera = getattr(camera, "any_camera", False)
 
     def poll(self) -> Observation:
+        # OBS first: it keeps the websocket connected, which the macOS camera
+        # probe needs in order to ask whether OBS itself holds the camera.
+        recording = self.obs is not None and self.obs.poll() is Observation.IN_USE
         cam = self.camera.poll()
-        if cam is Observation.IN_USE:
-            return cam
-        if self.obs is not None and self.obs.poll() is Observation.IN_USE:
-            return Observation.IN_USE
-        return cam
+        return Observation.IN_USE if recording else cam
 
     def describe(self) -> str:
-        parts = [self.camera.describe()]
         if self.obs is not None:
             self.obs.poll()
+        parts = [self.camera.describe()]
+        if self.obs is not None:
             parts.append(self.obs.describe())
         return "  ".join(parts)
 
@@ -199,6 +209,7 @@ class Watcher:
         self.owned = False
         self._failing = False
         self._last_obs: Observation | None = None
+        self._probe_error: str | None = None
 
     def start_values(self) -> tuple[int | None, int | None]:
         """(brightness, mired) the Light should come on with, per on_action."""
@@ -282,8 +293,14 @@ class Watcher:
         try:
             obs = self.probe.poll()
         except Exception as e:   # a probe glitch must never kill the watcher
-            log.debug("probe error: %s", e)
+            msg = f"{type(e).__name__}: {e}"
+            if msg != self._probe_error:     # once per distinct error, not every poll
+                log.warning("session probe failed: %s", msg)
+                self._probe_error = msg
             return
+        if self._probe_error:
+            log.info("session probe working again")
+            self._probe_error = None
         if obs is not self._last_obs:
             log.debug("session probe: %s", obs.value)
             if obs is Observation.ABSENT or self._last_obs is Observation.ABSENT:
