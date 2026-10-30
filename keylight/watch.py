@@ -346,8 +346,8 @@ class Watcher:
         if self.pushed:
             log.info("camera changes are pushed; polling every %.0fs as a fallback",
                      self.cfg.watch.fallback_poll_interval)
-        elif listen:
-            log.info("camera change notifications unavailable; polling every %.1fs", self.cfg.watch.poll_interval)
+        else:
+            log.info("polling every %gs", self.cfg.watch.poll_interval)
         try:
             while not stop.is_set():
                 self._wake.clear()
@@ -403,7 +403,7 @@ def main(argv: list[str] | None = None) -> int:
     w = cfg.watch
     devices = w.macos_devices + w.macos_virtual_devices if sys.platform == "darwin" else w.linux_devices + w.linux_virtual_devices
     auto_on = cfg.auto.enabled and not args.no_auto
-    log.info("watching %s%s (on after %.0fs, off after %.0fs, light %s, auto-brightness %s)%s",
+    log.info("watching %s%s (on after %gs, off after %gs, light %s, auto-brightness %s)%s",
              "any camera" if probe.any_camera else devices, " + OBS recording/streaming" if probe.obs else "",
              w.on_delay, w.off_delay, cfg.host or "via mDNS", "on" if auto_on else "off",
              " [dry run]" if args.dry_run else "")
