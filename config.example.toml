@@ -34,7 +34,8 @@ any_camera = false         # true: any camera counts (ignores the physical devic
 obs_sessions = true        # OBS recording/streaming counts as a Session
 
 on_action = "auto"         # "auto" (Sun Schedule + kelvin), "restore", or "preset:<name>"
-on_delay = 2.0             # a Session must last this long before the light turns on
+on_delay = 2.0             # a Session must last this long before the light turns on (not applied to a
+                           # macOS call seen by its mic next to OBS: nothing to debounce there)
 off_delay = 5.0            # ...and be over this long before it turns off
 absent_grace = 15.0        # camera vanished (KVM switch) longer than this: forget the Session
 poll_interval = 1.5        # only if change notifications are unavailable; normally nothing is polled

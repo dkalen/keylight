@@ -44,6 +44,7 @@ def make_probe(api, hub_holds_camera=lambda: None, virtual=(), mic_users=None):
     p.hub_holds_camera = hub_holds_camera
     p.mic_users = mic_users
     p._mic_watch = False
+    p._mic_call = False
     p.api = api
     p._on_change = None
     p._watched = set()
@@ -129,6 +130,21 @@ class MacProbeTests(unittest.TestCase):
         p = self.probe()
         p.poll()
         self.assertIsNone(p.next_wake(0))
+
+    def test_no_on_delay_only_for_a_call_seen_by_its_mic(self):
+        mic = []
+        p = self.probe(mic_users=lambda: mic)
+        self.api.running.add(CARD)
+        self.obs_answer = False
+        p.poll()
+        self.assertIsNone(p.on_delay())                     # plain camera use: keep the debounce
+        self.obs_answer = True
+        mic.append("us.zoom.xos")
+        p.poll()
+        self.assertEqual(p.on_delay(), 0.0)                 # call next to OBS: start at once
+        mic.clear()
+        p.poll()
+        self.assertIsNone(p.on_delay())
 
     def test_mic_alone_is_not_a_session(self):
         # a voice-only call (or dictation) with the camera off doesn't turn the light on

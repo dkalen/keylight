@@ -161,6 +161,7 @@ class MacCameraProbe:
         self.hub_holds_camera = hub_holds_camera
         self.mic_users = mic_users
         self._mic_watch = False      # last poll: card in use but attributed to OBS
+        self._mic_call = False       # last poll: IN_USE because a call app has the mic
         self.api = _CMIO()
         self._on_change: Callable[[], None] | None = None
         self._watched: set[int] = set()
@@ -216,14 +217,22 @@ class MacCameraProbe:
         physical = [(d, n) for d, n in self.matching() if (d, n) not in virtual]
         if not physical:
             return Observation.ABSENT
-        self._mic_watch = False
+        self._mic_watch = self._mic_call = False
         if any(self.api.running_somewhere(d) for d, _ in physical):
             if not self._hub_up():
                 return Observation.IN_USE
             self._mic_watch = self.mic_users is not None
             if self._mic_in_use():
+                self._mic_call = True
                 return Observation.IN_USE
         return Observation.IDLE
+
+    def on_delay(self) -> float | None:
+        """0 when the last IN_USE came from a call app's mic next to OBS: on_delay
+        debounces brief camera opens, but here the camera is OBS's and already
+        running, and a call app has the mic, so there's nothing to debounce.
+        None (use watch.on_delay) otherwise."""
+        return 0.0 if self._mic_call else None
 
     def next_wake(self, now: float) -> float | None:
         """While OBS holds the card, re-check the microphone every MIC_POLL s.

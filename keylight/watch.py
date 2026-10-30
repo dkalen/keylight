@@ -63,7 +63,9 @@ class SessionTracker:
         self._since = 0.0
         self._absent_since: float | None = None
 
-    def update(self, now: float, obs: Observation) -> Event | None:
+    def update(self, now: float, obs: Observation, on_delay: float | None = None) -> Event | None:
+        """`on_delay` overrides the configured one for this observation (the
+        probe knows when its evidence needs no debounce)."""
         if obs is Observation.ABSENT:
             self._want = None
             if self._absent_since is None:
@@ -78,7 +80,8 @@ class SessionTracker:
             return None
         if self._want != want:
             self._want, self._since = want, now
-        if now - self._since >= (self.on_delay if want else self.off_delay):
+        delay = (self.on_delay if on_delay is None else on_delay) if want else self.off_delay
+        if now - self._since >= delay:
             return Event.START if want else Event.STOP
         return None
 
@@ -314,6 +317,10 @@ class SessionProbe:
             self.obs.listen(on_change)
         return True
 
+    def on_delay(self) -> float | None:
+        """The camera probe's override for the last poll's on_delay, if any."""
+        return getattr(self.camera, "on_delay", lambda: None)()
+
     def next_wake(self, now: float) -> float | None:
         times = [t for t in (self.obs.next_wake(now) if self.obs is not None else None,
                              getattr(self.camera, "next_wake", lambda _: None)(now)) if t is not None]
@@ -453,7 +460,8 @@ class Watcher:
             if obs is Observation.ABSENT or self._last_obs is Observation.ABSENT:
                 log.info("camera device %s", "disappeared" if obs is Observation.ABSENT else "is back")
             self._last_obs = obs
-        event = self.tracker.update(self.clock(), obs)
+        on_delay = getattr(self.probe, "on_delay", lambda: None)()
+        event = self.tracker.update(self.clock(), obs, on_delay)
         if event is not None and self.handle(event):
             self.tracker.commit(event)
 

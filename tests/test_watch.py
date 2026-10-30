@@ -49,6 +49,12 @@ class TrackerTests(unittest.TestCase):
     def test_absent_while_idle_does_nothing(self):
         self.assertEqual(self.feed((0, GONE), (100, GONE), (101, IDLE)), [])
 
+    def test_on_delay_override(self):
+        self.assertEqual(self.t.update(0, IN, on_delay=0), Event.START)    # no debounce
+        self.t.commit(Event.START)
+        self.assertIsNone(self.t.update(1, IDLE, on_delay=0))             # off_delay untouched
+        self.assertEqual(self.t.update(6, IDLE, on_delay=0), Event.STOP)
+
     def test_next_deadline(self):
         self.assertIsNone(self.t.next_deadline(0))              # nothing pending
         self.t.update(0, IN)
@@ -158,6 +164,12 @@ class WatcherTests(unittest.TestCase):
             self.watcher.wake()
             t.join(2)
         self.assertFalse(t.is_alive())
+
+    def test_probe_on_delay_override_starts_at_once(self):
+        self.probe.on_delay = lambda: 0.0
+        self.probe.obs = IN
+        self.watcher.tick()
+        self.assertEqual(self.mock.state["on"], 1)                        # on_delay=2 skipped
 
     def test_call_cycle(self):
         self.advance(IN, 3)
@@ -322,6 +334,11 @@ class SessionProbeTests(unittest.TestCase):
     def test_camera_decides_absence(self):
         self.cam.obs = GONE
         self.assertIs(self.probe.poll(), GONE)
+
+    def test_on_delay_comes_from_camera(self):
+        self.assertIsNone(self.probe.on_delay())
+        self.cam.on_delay = lambda: 0.0
+        self.assertEqual(self.probe.on_delay(), 0.0)
 
     def test_next_wake_includes_camera_recheck(self):
         # the macOS camera probe asks for a mic re-check while OBS holds the card
