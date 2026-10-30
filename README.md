@@ -58,6 +58,8 @@ The installers are idempotent: re-run one after `git pull` to update the code an
   - Under Tools → WebSocket Server Settings, enable the server. The watcher reads the password from OBS's own config on each machine, so it never goes in the repo.
   - On Linux, the virtual camera needs v4l2loopback: `sudo dnf install akmod-v4l2loopback` from RPM Fusion, then reboot.
   - In call apps, pick **OBS Virtual Camera**.
+  - Start OBS with `--startvirtualcam`, because OBS doesn't restart the virtual camera on its own. On GNOME, copy the launcher and edit its `Exec` line: `sed 's/^Exec=obs$/Exec=obs --startvirtualcam/' /usr/share/applications/com.obsproject.Studio.desktop > ~/.local/share/applications/com.obsproject.Studio.desktop`.
+  - Without a running virtual camera, v4l2loopback (with `exclusive_caps`) hides the device. Call apps then offer only the card, which OBS is already streaming from, so the call gets no video while the light still comes on. Firefox can also keep the card open after such a failure, which keeps the light on until Firefox restarts.
 - **Calibration:** run `keylight auto --save-frame ~/Pictures`. The saved frame shows your face box, the Key Side box and a 10% grid. Read the background rectangle off the grid and set `[auto] background_roi = [x, y, w, h]`. Then adjust `target_luma` until `keylight auto` says "would set: N% -> N%" when you look right on camera.
 
 ## CLI
