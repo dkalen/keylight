@@ -17,7 +17,7 @@ macos_virtual_devices = ["OBS Virtual Camera"]
 ignore_processes = ["obs"]      # the Hub's own hold on the card never counts
 on_action = "auto"
 on_delay = 0.5                  # light on ~0.5-1 s after a call starts
-poll_interval = 0.5
+poll_interval = 5.0              # Linux only (macOS is pushed): rare calls here, so light on within ~5 s
 
 [obs]
 # password: read from OBS's own obs-websocket config on each machine
