@@ -16,10 +16,14 @@ macos_devices = ["Live Streamer CAP 4K"]
 macos_virtual_devices = ["OBS Virtual Camera"]
 ignore_processes = ["obs"]      # the Hub's own hold on the card never counts
 on_action = "auto"
+on_delay = 0.5                  # light on ~0.5-1 s after a call starts
+poll_interval = 0.5
 
 [obs]
 # password: read from OBS's own obs-websocket config on each machine
 
 [auto]
 key_side = "left"
+night_brightness = 15           # Sun Schedule floor after dusk; set by eye in OBS, 2026-10-29
+target_luma = 0.263             # Key Side luma measured at that setting (night, dark room)
 # background_roi = [x, y, w, h]  # calibrate: keylight auto --save-frame ~/Pictures
