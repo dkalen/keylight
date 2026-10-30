@@ -95,6 +95,7 @@ class WatchConfig:
     off_delay: float = 5.0
     absent_grace: float = 15.0           # how long a vanished camera may stay gone and still count as the same Session
     poll_interval: float = 1.5
+    fallback_poll_interval: float = 2.0  # macOS: camera changes are pushed; this paces OBS recording checks and catches anything missed
     ignore_processes: list[str] = field(default_factory=list)  # Linux: process names (comm) that don't count as camera users
 
 

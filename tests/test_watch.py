@@ -1,4 +1,5 @@
 import logging
+import threading
 import unittest
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -48,10 +49,30 @@ class TrackerTests(unittest.TestCase):
     def test_absent_while_idle_does_nothing(self):
         self.assertEqual(self.feed((0, GONE), (100, GONE), (101, IDLE)), [])
 
+    def test_next_deadline(self):
+        self.assertIsNone(self.t.next_deadline(0))              # nothing pending
+        self.t.update(0, IN)
+        self.assertEqual(self.t.next_deadline(0.5), 1.5)         # on_delay=2
+        self.feed((2, IN), (3, IDLE))
+        self.assertEqual(self.t.next_deadline(4), 4)             # off_delay=5 from t=3
+        self.feed((5, GONE))
+        self.assertEqual(self.t.next_deadline(5), 15)            # absent_grace while active
+        self.t.active = False
+        self.assertIsNone(self.t.next_deadline(5))               # absent while idle: nothing to fire
+
     def test_uncommitted_event_repeats(self):
         self.assertIsNone(self.t.update(0, IN))
         self.assertEqual(self.t.update(2, IN), Event.START)
         self.assertEqual(self.t.update(3, IN), Event.START)    # not committed: retried
+
+
+def wait_for(cond, timeout=2.0) -> bool:
+    deadline = threading.Event()
+    for _ in range(int(timeout / 0.01)):
+        if cond():
+            return True
+        deadline.wait(0.01)
+    return bool(cond())
 
 
 class FakeProbe:
@@ -91,6 +112,47 @@ class WatcherTests(unittest.TestCase):
             self.watcher.tick()
             self.now += step
         self.watcher.tick()
+
+    def test_wait_time_uses_fallback_when_pushed_and_wakes_for_deadlines(self):
+        self.make(poll_interval=0.5, fallback_poll_interval=4)
+        self.assertEqual(self.watcher.wait_time(), 0.5)
+        self.watcher.pushed = True
+        self.assertEqual(self.watcher.wait_time(), 4)
+        self.probe.obs = IN
+        self.watcher.tick()                                     # on_delay=2 now pending
+        self.assertAlmostEqual(self.watcher.wait_time(), 2.05)
+
+    def test_push_wakes_the_loop(self):
+        polls = []
+        probe = self.probe
+
+        class PushProbe:
+            def listen(self, on_change):
+                self.on_change = on_change
+                return True
+
+            def poll(self):
+                polls.append(1)
+                return probe.obs
+
+        pushing = PushProbe()
+        self.probe = pushing
+        self.make(fallback_poll_interval=60)
+        stop = threading.Event()
+        t = threading.Thread(target=self.watcher.run, args=(stop,))
+        t.start()
+        try:
+            self.assertTrue(wait_for(lambda: polls))
+            self.assertTrue(self.watcher.pushed)
+            before = len(polls)
+            pushing.on_change()
+            self.assertTrue(wait_for(lambda: len(polls) > before))
+            self.assertGreater(len(polls), before)               # woke long before the 60 s fallback
+        finally:
+            stop.set()
+            self.watcher.wake()
+            t.join(2)
+        self.assertFalse(t.is_alive())
 
     def test_call_cycle(self):
         self.advance(IN, 3)

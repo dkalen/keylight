@@ -38,6 +38,7 @@ on_delay = 2.0             # a Session must last this long before the light turn
 off_delay = 5.0            # ...and be over this long before it turns off
 absent_grace = 15.0        # camera vanished (KVM switch) longer than this: forget the Session
 poll_interval = 1.5
+fallback_poll_interval = 2.0  # macOS: camera changes are pushed, so this only paces OBS recording/streaming checks
 ignore_processes = ["obs"] # Linux: processes whose use of a device doesn't count
 
 [obs]

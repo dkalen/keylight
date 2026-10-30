@@ -12,6 +12,11 @@ Rules:
   - We act on transitions only, so manual changes are never fought.
   - Camera vanishes (KVM switch): no light change. If it stays gone longer than
     `absent_grace`, the Session is forgotten (another machine may own the light now).
+
+On macOS the camera probe pushes changes (CoreMediaIO listeners, delivered via
+the main thread's run loop), so the loop wakes at once and otherwise polls only
+every `fallback_poll_interval` s, for OBS recording/streaming and as a safety
+net. Elsewhere it polls every `poll_interval` s.
 """
 
 from __future__ import annotations
@@ -73,6 +78,14 @@ class SessionTracker:
         if now - self._since >= (self.on_delay if want else self.off_delay):
             return Event.START if want else Event.STOP
         return None
+
+    def next_deadline(self, now: float) -> float | None:
+        """Seconds until a pending start/stop/lost would fire, if one is pending."""
+        if self._absent_since is not None:
+            return max(0.0, self._absent_since + self.absent_grace - now) if self.active else None
+        if self._want is None:
+            return None
+        return max(0.0, self._since + (self.on_delay if self._want else self.off_delay) - now)
 
     def commit(self, event: Event) -> None:
         self.active = event is Event.START
@@ -189,6 +202,10 @@ class SessionProbe:
     def all_devices(self) -> list[str]:
         return self.camera.all_devices()
 
+    def listen(self, on_change: Callable[[], None]) -> bool:
+        listen = getattr(self.camera, "listen", None)
+        return bool(listen and listen(on_change))
+
 
 class Watcher:
     def __init__(self, cfg: Config, probe, dry_run: bool = False,
@@ -210,6 +227,18 @@ class Watcher:
         self._failing = False
         self._last_obs: Observation | None = None
         self._probe_error: str | None = None
+        self._wake = threading.Event()
+        self.pushed = False
+
+    def wake(self) -> None:
+        """Run the next tick now (a probe pushed a change, or we're stopping)."""
+        self._wake.set()
+
+    def wait_time(self) -> float:
+        w = self.cfg.watch
+        interval = w.fallback_poll_interval if self.pushed else w.poll_interval
+        due = self.tracker.next_deadline(self.clock())
+        return interval if due is None else min(interval, due + 0.05)
 
     def start_values(self) -> tuple[int | None, int | None]:
         """(brightness, mired) the Light should come on with, per on_action."""
@@ -311,10 +340,19 @@ class Watcher:
             self.tracker.commit(event)
 
     def run(self, stop: threading.Event) -> None:
+        """Callers that set `stop` should also call `wake()` so the loop notices at once."""
+        listen = getattr(self.probe, "listen", None)
+        self.pushed = bool(listen and listen(self.wake))
+        if self.pushed:
+            log.info("camera changes are pushed; polling every %.0fs as a fallback",
+                     self.cfg.watch.fallback_poll_interval)
+        elif listen:
+            log.info("camera change notifications unavailable; polling every %.1fs", self.cfg.watch.poll_interval)
         try:
             while not stop.is_set():
+                self._wake.clear()
                 self.tick()
-                stop.wait(self.cfg.watch.poll_interval)
+                self._wake.wait(self.wait_time())
         finally:
             self._stop_auto()
 
@@ -377,9 +415,31 @@ def main(argv: list[str] | None = None) -> int:
         auto_factory = lambda: AutoBrightness(cfg, runner, dry_run=args.dry_run)  # noqa: E731
 
     stop = threading.Event()
+    watcher = Watcher(cfg, probe, dry_run=args.dry_run, runner=runner, auto_factory=auto_factory)
+
+    def on_signal(*_) -> None:
+        stop.set()
+        watcher.wake()
+
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-        signal.signal(sig, lambda *_: stop.set())
-    Watcher(cfg, probe, dry_run=args.dry_run, runner=runner, auto_factory=auto_factory).run(stop)
+        signal.signal(sig, on_signal)
+    if sys.platform == "darwin":
+        # CoreMediaIO only notifies (and refreshes its device list) through the
+        # main thread's run loop, so that runs here and the watch loop on a worker.
+        from .camera_macos import run_main_loop
+
+        def work() -> None:
+            try:
+                watcher.run(stop)
+            finally:
+                stop.set()
+
+        worker = threading.Thread(target=work, name="watch")
+        worker.start()
+        run_main_loop(stop)
+        worker.join()
+    else:
+        watcher.run(stop)
     log.info("stopped")
     return 0
 

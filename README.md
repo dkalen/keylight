@@ -95,7 +95,7 @@ keylight-watch --no-auto        # Sessions only, no auto-brightness
 
 Session detection:
 - **Linux:** scans `/proc/*/fd` for your processes holding the card or the virtual camera. Processes in `ignore_processes` don't count, which is how OBS's own hold on the card is excluded. Devices are resolved again on every poll, so `/dev/videoN` renumbering doesn't matter. A poll costs about 10 ms.
-- **macOS:** reads CoreMediaIO's `DeviceIsRunningSomewhere` through `ctypes`. CoreMediaIO can't say *which* app runs a device, so the watcher asks OBS whether its own camera source is live (`GetSourceActive`).
+- **macOS:** reads CoreMediaIO's `DeviceIsRunningSomewhere` through `ctypes`, with CoreMediaIO listeners pushing every change (a camera starting or stopping, a camera arriving or leaving), so a call is seen at once. It still polls every `fallback_poll_interval` (2 s) for OBS recording/streaming and as a safety net. CoreMediaIO delivers those notifications, and refreshes its device list, only through the main thread's run loop, so the watcher runs one there. CoreMediaIO can't say *which* app runs a device, so the watcher asks OBS whether its own camera source is live (`GetSourceActive`).
   - **OBS camera source live:** use of the card is attributed to OBS, so a call made on the card at that moment isn't detected. Recording or streaming still counts as a Session.
   - **OBS closed, or open without a live camera source** (for example, a screen recording during a call): use of the card counts.
   - **OBS running with its websocket off:** the watcher can't tell, so it assumes OBS holds the camera.
