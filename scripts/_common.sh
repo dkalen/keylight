@@ -24,8 +24,9 @@ for arg in "$@"; do
         *) echo "unknown option: $arg" >&2; exit 2 ;;
     esac
 done
-# A previous --with-auto install stays a --with-auto install.
-[ -x "$LIB/venv/bin/python" ] && WITH_AUTO=1
+# A previous --with-auto install stays a --with-auto install, even if its venv
+# broke: a system Python upgrade leaves venv/bin/python dangling.
+[ -d "$LIB/venv" ] && WITH_AUTO=1
 
 sha256_of() {
     if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
@@ -33,7 +34,8 @@ sha256_of() {
 
 install_auto_deps() {
     local py=$1
-    [ -x "$LIB/venv/bin/python" ] || "$py" -m venv "$LIB/venv"
+    # --clear: `venv` can't rebuild over the dangling links of a dead interpreter
+    [ -x "$LIB/venv/bin/python" ] || "$py" -m venv --clear "$LIB/venv"
     "$LIB/venv/bin/python" -m pip install -q --upgrade pip numpy opencv-python-headless
     mkdir -p "$LIB/models"
     local model=$LIB/models/$MODEL_NAME
