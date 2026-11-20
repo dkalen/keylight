@@ -24,10 +24,10 @@ poll_interval = 5.0              # only if change notifications are unavailable 
 
 [auto]
 key_side = "left"
-# Camera: a6000 + Viltrox 27mm at f/1.2, ISO 100, 1/60 s (since 2026-11-20). These levels
-# assume that exposure: each 1% of light adds ~0.010 linear Key Side luma (old kit lens: ~0.0037).
-night_brightness = 6            # keeps the face level set by eye on 2026-10-29 (old lens at 15%)
-day_brightness = 15             # set by eye in OBS at midday, 2026-11-20 (sun 28 deg)
+# Camera: a6000 + Viltrox 27mm at f/2, ISO 100, 1/60 s (since 2026-11-20). These levels
+# assume that exposure: each 1% of light adds ~0.0060 linear Key Side luma (old kit lens: ~0.0037).
+night_brightness = 10           # keeps the face level set by eye on 2026-10-29 (old lens at 15%)
+day_brightness = 18             # set by eye in OBS at midday, 2026-11-20 (sun 28 deg)
 target_luma = 0.263             # night look, set by eye 2026-10-29; a picture value, so the lens doesn't change it
-max_stops_under = 0.6           # day look: face 0.57 stop under the wall at the 15% picked by eye
+max_stops_under = 0.6           # day look: face 0.67 stop under the wall at the 18% picked by eye
 background_roi = [0.65, 0.05, 0.30, 0.45]  # window-side wall, upper right of the frame
