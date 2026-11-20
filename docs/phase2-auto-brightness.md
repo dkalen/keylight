@@ -10,12 +10,12 @@ Terms are defined in [GLOSSARY.md](../GLOSSARY.md), and the decisions are record
 
 - The window is about 10 ft to your right, a few feet behind you, and roughly parallel to the camera's line of sight. Daylight mostly lights the room behind you, which is in frame. In the late afternoon it also reaches your right cheek.
 - The Light is on your left, opposite the window.
-- The camera's exposure and white balance are fully manual, with white balance at 4700 K. The Light is pinned to 4700 K too.
+- The camera's exposure and white balance are fully manual, with white balance at 4700 K. The Light is pinned to 4700 K too. Since 2026-11-20 the a6000 uses a Viltrox 27mm at f/1.2, ISO 100 and 1/60 s (a 60 Hz-safe shutter). Brightness levels in `config.toml` are tied to that exposure; change any of the three and re-measure (see Tuning).
 
 Three consequences follow:
-1. More daylight means a brighter background, so the Light needs more brightness by day. The Sun Schedule runs from `night_brightness` (20) up to `day_brightness` (45).
+1. More daylight means a brighter background, so the Light needs more brightness by day. The Sun Schedule runs from `night_brightness` up to `day_brightness` (6% and 15% in the live config).
 2. Daylight on the far cheek would make a whole-face average read high, and the loop would wrongly dim the key. So only the **Key Side** (your left half) is measured.
-3. The background matters. Ratio mode keeps the face at most `max_stops_under` (1) stop below the background.
+3. The background matters. Ratio mode keeps the face at most `max_stops_under` (0.6 in the live config) stop below the background.
 
 ## Measurement
 
